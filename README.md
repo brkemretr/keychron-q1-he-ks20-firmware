@@ -40,33 +40,28 @@ The Keychron Q1 HE comes standard with **Gateron Jupiter** magnetic switches. If
 
 ## 🚀 Key Improvements & Engineering Fixes
 
-### 1. 3-Tier Bidirectional Top-Stop Baseline Tracker (`0.2mm` Thermal & Stem-Seating Drift Recovery)
-- On the Q1 HE PCB with reverse-polarity KS-20 switches, PCB warm-up (from RGB LEDs/MCU) and mechanical stem seating after a keystroke can shift a switch's physical top-stop resting ADC either downward **or** upward by `20..65` counts while remaining inside the physical resting band (`< 4030`).
-- Implements a **3-tier stillness-verified top-stop tracker**:
-  - **Tier 1 (Inside Deadzone):** Adapts `zero_travel` after `250ms` of `±1` ADC stillness while released inside the deadzone.
-  - **Tier 2 (Warm-Up / Stem-Seating Recovery):** When a released key drifts slightly above the deadzone (`raw_delta <= 80`, `ADC < 4030`), re-zeros `zero_travel` after `600ms` of rock-solid `±1` count top-stop stillness.
-  - **Tier 3 (`0.2mm` Stuck-At-Top-Stop Guard):** If a key at ultra-shallow actuation (`0.1mm–0.3mm`) gets trapped by upward resting drift at the physical top-stop (`ADC < 4025`) with motionless `±1` count stability for `1.5s` (impossible for a human finger holding a key mid-stroke), it automatically re-zeros and releases the key.
+### 1. One-Way Release-Direction Baseline Recovery + Keychron `auto_caliration_check` State Machine
+- **Zero Mid-Stroke Interference (`track_resting_baseline`):** Strictly adapts `zero_travel` **downward only** (`value < zero_travel`) after `500ms` of stability **only while the key is in `AKS_REGULAR_RELEASED` state**. Never shifts `zero_travel` upward on a timer and never force-releases a held or feathered key.
+- **Keychron Dynamic Release-Velocity Auto-Calibration (`auto_caliration_check`):** Adapts Keychron's native 4-state auto-calibration state machine (`AUTO_CALIB_FULL_TRAVEL` -> `AUTO_CALIB_ZERO_TRAVEL`) for reverse-polarity KS-20 switches. Only updates resting baseline when a key is pressed to true bottom-out (`>= 4080`) and snaps rapidly back to the physical top-stop (`< 4025`, full stroke `>= 85` counts) within `< 200ms` (`AUTO_CALIB_VALID_RELASING_TIME`) across multiple verified cycles (`confidence >= 12`).
 
-### 2. 17-Point Op-Amp Rail-Saturation Compensation LUT (`0.2mm – 3.8mm` True Linear Travel)
+### 2. 17-Point Op-Amp Rail-Saturation Compensation Curve (`0.2mm – 3.8mm` True Linear Travel)
 - Because reverse-polarity KS-20 switches push the Q1 HE's Hall sensor op-amp toward its `3.30V` (`4094`) supply rail, the first `1.0mm` of physical travel spans `~50%` of the ADC range while the final millimeter (`3.0mm → 4.0mm`) compresses into the top `7%` (`4075..4094`).
-- Implements an `8%` proportional resting deadzone (`8..22` ADC counts), a `1`-count top margin (preserving `4080..4093` for deep bottom-out), and a **17-point piecewise-linear saturation-compensation LUT (`ks20_travel_lut`)**:
-  - `0.2mm – 1.0mm` maps to `15% – 48%` of active ADC swing (`~36..115` counts above `zero`), providing rock-solid shallow stability.
+- Implements a proportional resting deadzone (`8%` of active swing, clamped to `8..22` ADC counts), a `1`-count top margin (preserving `4080..4093` for deep bottom-out), and a **17-point convex saturation-compensation LUT (`ks20_travel_lut`)**:
+  - `0.2mm – 1.0mm` maps to `15% – 48%` of active ADC swing (`~36..115` counts above `zero`), expanding shallow ADC resolution by **2.5x–3x** to match Keychron's stock 4th-degree polynomial LUT behavior.
   - `3.8mm` maps to `98%` of active ADC swing (`4089..4093`), ensuring `3.8mm` only triggers at true physical bottom-out.
 
-### 3. Global Actuation Profile Fix (`profile.c`) & Full `0.2mm – 3.8mm` Support
-- Fixes a bug in Keychron's [`profile_set_traval()`](./patches/keychron_q1_he_ks20_support.patch) where changing Global Actuation in Keychron Launcher updated the profile struct but never called `update_key_config(r, c)` or cleared per-key overrides in RAM.
-- Removes the `3.5mm` hard clamp in `update_key_config()`, supporting the full `0.1mm – 3.8mm` range in Keychron Launcher and immediately re-evaluating key state when actuation distance is increased.
+### 3. Restored Keychron 3-Layer Hardware & Software Debounce Architecture
+- **Native 3-Sample Hardware ADC Debounce (`ANALOG_DEBOUCE_TIME`):** Every state transition (`RELEASED <-> PRESSED`) is verified across 3 consecutive hardware `adcConvert` reads in `analog_matrix_scan.c`, identical to Keychron's stock implementation, while masking unpopulated pins via `analog_matrix_mask`.
+- **Schmitt-Trigger Raw ADC Deadband (`update_raw_value`):** Preserves Keychron's raw ADC deadband (`abs(k->last_val - smooth_val) < 3`) across active travel so 1–2 count sensor fluctuations never jitter `travel` while holding a key mid-stroke.
+- **QMK `sym_eager_pk` Per-Key Lockout (`info.json`):** Enables 5ms post-transition bounce lockout with **0ms eager press/release latency**.
 
-### 4. Unpopulated Matrix Pin Masking & Native 3-Sample Hardware ADC Debounce
-- Masks unpopulated/floating matrix coordinates (`(5,3)`, `(5,7)`, `(4,11)`, `(0,14)`, `(3,14)`) via `analog_matrix_mask` in both `matrix_read_rows_on_col()` and `update_raw_value()` so floating pins never disturb column debounce.
-- Preserves Keychron's native 3-pass `ANALOG_DEBOUCE_TIME` hardware ADC verification and `sym_eager_pk` 5ms post-transition lockout without rolling back the EMA filter of neighboring keys on the same column.
-
-### 5. Keychron-Engineered Hysteresis & Rapid Trigger Bottom Deadzone
+### 4. Keychron-Engineered Hysteresis & Rapid Trigger Bottom Deadzone
 - **Regular Trigger Hysteresis (`update_key_config`):**
-  - `0.2mm – 0.3mm` actuation: `deactn_pt = 6` (`0.10mm` release threshold above deadzone).
-  - `0.4mm – 1.0mm` actuation: `0.25mm` (`15` units) hysteresis.
-  - `> 1.0mm` actuation: `0.35mm` (`21` units) hysteresis.
-- **Rapid Trigger Rail-Saturation Protection:** Enforces Keychron's `BOTTOM_DEAD_ZONE` (`3.8mm`) ceiling guard and a minimum `0.30mm` window in the deep compressed zone (`> 2.0mm`), preventing op-amp rail saturation from causing phantom rapid releases/re-triggers.
+  - `0.2mm – 0.3mm` actuation: `deactn_pt = 0` (must return to top deadzone to release, preventing micro-chatter).
+  - `0.4mm – 1.0mm` actuation: `0.30mm` (`18` units) hysteresis.
+  - `> 1.0mm` actuation: `0.40mm` (`24` units) hysteresis.
+- **Rapid Trigger Rail-Saturation Protection (`action_rapid_trigger.c`):** Preserves Keychron's `BOTTOM_DEAD_ZONE` (`3.8mm`) ceiling guard and enforces a minimum `0.30mm` window in the deep compressed zone (`> 2.0mm`), preventing op-amp rail saturation from causing phantom rapid releases/re-triggers.
+- **Global Actuation Profile Sync (`profile.c`):** Fixes Keychron's `profile_set_traval()` so Global Actuation updates in Keychron Launcher immediately update all 82 keys in RAM across the full `0.2mm – 3.8mm` range.
 
 ### 6. 4-Tap Exponential Moving Average (EMA) Noise Filter
 - 4-tap integer EMA filter (`rev_ema = (rev_ema * 3 + (val << 2)) >> 2`).
