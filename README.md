@@ -38,11 +38,43 @@ The Keychron Q1 HE comes standard with **Gateron Jupiter** magnetic switches. If
 
 ---
 
+## ⚠️ Physical Hardware Limits & Recommended Settings (KS-20 on Q1 HE)
+
+Because **Gateron KS-20 switches** (such as **Magnetic Jade, Orchid, Jade Pro, etc.**) were designed with different mechanical and magnetic characteristics than the factory Keychron Jupiter switches, users should understand the physical and electrical limits of using KS-20 switches on the Q1 HE PCB:
+
+### 1. Mechanical Travel Difference: 3.5mm vs. 4.0mm
+- **Factory Gateron Jupiter:** Has **4.0mm** of total mechanical travel. Keychron Launcher's slider (0.2mm – 3.8mm) was built around this 4.0mm baseline.
+- **Gateron KS-20 Switches:** Have a factory total mechanical travel of **$3.5 \pm 0.1\text{ mm}$**. The switch physically stops at 3.5mm and mechanically cannot reach 3.8mm or 4.0mm.
+
+### 2. Hall Sensor Op-Amp Rail Saturation / Clipping (~2.6mm – 2.8mm)
+- **High-Flux N52 Magnet:** KS-20 stems contain powerful neodymium magnets ($700\text{ Gauss}$ at bottom-out).
+- **PCB Op-Amp Saturation:** The Q1 HE's analog amplifier circuit was engineered for Jupiter's reverse-polarity weaker flux. When a KS-20 magnet approaches the sensor, the amplifier output reaches its positive power supply rail (**3.30V = ADC 4094**) around **~2.6mm – 2.8mm** of physical stroke.
+- **The Dead Saturation Zone (2.8mm → 3.5mm):** From ~2.8mm down to the mechanical bottom-out at 3.5mm (the final ~0.7mm), the ADC reading is flatlined at `4094` ($\Delta V = 0$). **No firmware in the world can measure or detect physical stem movement in this final 0.7mm**, because the analog circuit is at its hardware ceiling.
+
+### 3. Why 3.8mm Triggers Early (Before Mechanical Bottom-Out)
+- If you set Keychron Launcher's actuation slider to **3.8mm**, the firmware looks for an ADC reading of `~4088`.
+- Because of op-amp rail saturation, `ADC 4088` is reached at **~2.5mm – 2.7mm of physical stroke**.
+- Consequently, the key triggers when you still feel **~0.8mm – 1.0mm of mechanical travel left** before bottoming out. This is a physical hardware constraint of pairing strong KS-20 magnets with the Q1 HE PCB op-amp gain.
+
+### 4. Recommended Actuation Settings in Keychron Launcher
+To achieve the most accurate and linear experience:
+
+| Usage Profile | Recommended Setting | Description |
+| :--- | :--- | :--- |
+| **Esports / Fast Reaction** | `0.3 mm – 0.8 mm` | Ultra-fast response with zero misclicks. Rock-solid with v1.3.2 resting baseline tracking. |
+| **Balanced / Daily Typing** | `1.2 mm – 1.8 mm` | Standard mechanical feel, prevents accidental actuation while resting fingers. |
+| **Deep Actuation** | `2.0 mm – 2.5 mm` | Triggers near the end of the measurable travel range. |
+| **⚠️ Not Recommended** | `> 2.6 mm` (e.g. `3.0 mm – 3.8 mm`) | Enters the op-amp saturation zone. Triggers early with ~0.8mm of travel still remaining. |
+| **Rapid Trigger** | `0.1 mm – 0.4 mm` | Best performance when operating within the linear `0.2 mm – 2.5 mm` stroke window. |
+
+---
+
 ## 🚀 Key Improvements & Engineering Fixes
 
-### 1. One-Way Release-Direction Baseline Recovery + Keychron `auto_caliration_check` State Machine
-- **Zero Mid-Stroke Interference (`track_resting_baseline`):** Strictly adapts `zero_travel` **downward only** (`value < zero_travel`) after `500ms` of stability **only while the key is in `AKS_REGULAR_RELEASED` state**. Never shifts `zero_travel` upward on a timer and never force-releases a held or feathered key.
-- **Keychron Dynamic Release-Velocity Auto-Calibration (`auto_caliration_check`):** Adapts Keychron's native 4-state auto-calibration state machine (`AUTO_CALIB_FULL_TRAVEL` -> `AUTO_CALIB_ZERO_TRAVEL`) for reverse-polarity KS-20 switches. Only updates resting baseline when a key is pressed to true bottom-out (`>= 4080`) and snaps rapidly back to the physical top-stop (`< 4025`, full stroke `>= 85` counts) within `< 200ms` (`AUTO_CALIB_VALID_RELASING_TIME`) across multiple verified cycles (`confidence >= 12`).
+### 1. Released-Only Upward Resting Drift Tracking + Keychron `auto_caliration_check` State Machine
+- **Released-Only Upward Thermal Drift Tracking (v1.3.2):** High-baseline keys (such as the F-row, which rests around ADC ~4000 with only ~95 counts of total swing) warm up by +25..30 counts as the PCB heats up. When a key is in `AKS_REGULAR_RELEASED` state and motionless within ±2 ADC counts for 1000 scans (1.0s), upward resting drift is automatically adapted into `zero_travel`, preventing 0.2mm ghost-triggering.
+- **Zero Mid-Stroke Interference:** Never touches `zero_travel` while a key is in `AKS_REGULAR_PRESSED` state. Holding or feathering a key mid-stroke is **never** re-zeroed or force-released.
+- **Keychron Dynamic Release-Velocity Auto-Calibration:** Adapts Keychron's native 4-state auto-calibration state machine (`AUTO_CALIB_FULL_TRAVEL` -> `AUTO_CALIB_ZERO_TRAVEL`) for reverse-polarity KS-20 switches, requiring verified full bottom-out (`>= 4080`) -> fast top-stop return cycles (`confidence >= 12`).
 
 ### 2. 17-Point Op-Amp Rail-Saturation Compensation Curve (`0.2mm – 3.8mm` True Linear Travel)
 - Because reverse-polarity KS-20 switches push the Q1 HE's Hall sensor op-amp toward its `3.30V` (`4094`) supply rail, the first `1.0mm` of physical travel spans `~50%` of the ADC range while the final millimeter (`3.0mm → 4.0mm`) compresses into the top `7%` (`4075..4094`).
