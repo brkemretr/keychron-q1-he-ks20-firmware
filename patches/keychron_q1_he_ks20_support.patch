@@ -100,7 +100,7 @@ index 812c6dd..1eb75da 100644
      }
  
 diff --git a/keyboards/keychron/common/analog_matrix/analog_matrix.c b/keyboards/keychron/common/analog_matrix/analog_matrix.c
-index d4e64c0..4467942 100644
+index d4e64c0..9d435de 100644
 --- a/keyboards/keychron/common/analog_matrix/analog_matrix.c
 +++ b/keyboards/keychron/common/analog_matrix/analog_matrix.c
 @@ -115,6 +115,11 @@ extern void socd_action(void);
@@ -149,9 +149,12 @@ index d4e64c0..4467942 100644
 +    // Pure KS-20 Architecture: All switches rest around 3680-4020 and increase toward 4094 on press
 +    int32_t full_delta = (int32_t)full - (int32_t)zero;
 +    if (full_delta < 40) full_delta = DEFAULT_REV_FULL_RANGE;
-+
+ 
+-    if (x > REF_ZERO_TRAVEL) return 0;
 +    int32_t raw_delta = (int32_t)value - (int32_t)zero;
-+
+ 
+-    travel = (uint16_t)((TRAVEL_POLYNOMIAL(x) - TRAVEL_POLYNOMIAL(REF_ZERO_TRAVEL)) * scale_factor[row][col] * TRAVEL_SCALE + 0.5);
+-    if (travel > (FULL_TRAVEL_UNIT + 1) * TRAVEL_SCALE - 1) travel = (FULL_TRAVEL_UNIT + 1) * TRAVEL_SCALE - 1;
 +    // Keychron-style proportional resting deadzone (~8% of full range, clamped to 8..22 ADC counts):
 +    // Absorbs thermal drift, power rail noise, and natural finger resting weight
 +    int32_t dead_zone = (full_delta * 8) / 100;
@@ -162,13 +165,10 @@ index d4e64c0..4467942 100644
 +    // Preserve full upper ADC resolution up to full - 1 (4093..4094) so 3.8mm requires true bottom-out
 +    int32_t eff_range = full_delta - dead_zone - 1;
 +    if (eff_range < 20) eff_range = 20;
- 
--    if (x > REF_ZERO_TRAVEL) return 0;
++
 +    uint32_t norm = ((uint32_t)(raw_delta - dead_zone) << 10) / (uint32_t)eff_range;
 +    if (norm >= 1024) return FULL_TRAVEL_UNIT * TRAVEL_SCALE;
- 
--    travel = (uint16_t)((TRAVEL_POLYNOMIAL(x) - TRAVEL_POLYNOMIAL(REF_ZERO_TRAVEL)) * scale_factor[row][col] * TRAVEL_SCALE + 0.5);
--    if (travel > (FULL_TRAVEL_UNIT + 1) * TRAVEL_SCALE - 1) travel = (FULL_TRAVEL_UNIT + 1) * TRAVEL_SCALE - 1;
++
 +    uint32_t idx  = norm >> 6;
 +    uint32_t frac = norm & 0x3F;
 +    uint32_t y0   = ks20_travel_lut[idx];
@@ -776,7 +776,10 @@ index d4e64c0..4467942 100644
 +    // Suppresses ADC power/multiplexer white noise (±3-5 counts) down to < 0.5 count
 +    rev_ema[row][col] = (rev_ema[row][col] * 3 + (value << 2)) >> 2;
 +    uint16_t smooth_val = (rev_ema[row][col] + 2) >> 2;
-+
+ 
+-    k->last_val = value;
+-    k->value    = value;
+-    k->travel   = convert_to_travel(row, col, value);
 +    auto_caliration_check(row, col, smooth_val);
 +
 +    k->value = smooth_val;
@@ -792,10 +795,7 @@ index d4e64c0..4467942 100644
 +        return false;
 +    }
 +    if (k->last_val == smooth_val) return false;
- 
--    k->last_val = value;
--    k->value    = value;
--    k->travel   = convert_to_travel(row, col, value);
++
 +    k->last_val = smooth_val;
 +    k->travel   = convert_to_travel(row, col, smooth_val);
  
@@ -811,7 +811,7 @@ index d4e64c0..4467942 100644
              memset(calib_state_matrix, 0, sizeof(calib_state_matrix));
              memset(manual_calib_zero_invalid, 0, sizeof(manual_calib_zero_invalid));
              break;
-@@ -811,7 +1058,44 @@ bool get_realtime_travel(uint8_t *data) {
+@@ -811,7 +1058,63 @@ bool get_realtime_travel(uint8_t *data) {
      return true;
  }
  
@@ -838,6 +838,25 @@ index d4e64c0..4467942 100644
 +            rev_rest_val[row][col] = value;
 +            rev_rest_cnt[row][col] = 0;
 +        }
++    } else if (k->state == AKS_REGULAR_RELEASED && value > p_calib->zero_travel &&
++               value - p_calib->zero_travel <= 60 && k->travel < k->regular.actn_pt) {
++        // RELEASED-ONLY UPWARD THERMAL DRIFT TRACKING (KS-20 on Q1 HE):
++        // Untouched keys with a high resting ADC (~4000, only ~95 counts of total swing) warm up by
++        // +25..35 counts within minutes, which exceeds the 0.2mm threshold. Follow this slow drift only
++        // while the key is RELEASED, below its actuation point, and motionless within ±2 counts for 1000 scans.
++        // Never applied to PRESSED keys, so holding/feathering a key is never re-zeroed or force-released.
++        int32_t diff = (int32_t)value - (int32_t)rev_rest_val[row][col];
++        if (abs(diff) <= 2) {
++            if (++rev_rest_cnt[row][col] >= 1000) {
++                rev_rest_cnt[row][col] = 0;
++                p_calib->zero_travel   = rev_rest_val[row][col];
++                k->travel              = convert_to_travel(row, col, value);
++                k->last_travel         = k->travel;
++            }
++        } else {
++            rev_rest_val[row][col] = value;
++            rev_rest_cnt[row][col] = 0;
++        }
 +    } else {
 +        rev_rest_val[row][col] = value;
 +        rev_rest_cnt[row][col] = 0;
@@ -856,7 +875,7 @@ index d4e64c0..4467942 100644
      calibrate();
      profile_indication_timer_check();
      socd_action();
-@@ -850,10 +1134,13 @@ static bool get_calibrated_value(uint8_t row, uint8_t col, uint8_t *data) {
+@@ -850,10 +1153,13 @@ static bool get_calibrated_value(uint8_t row, uint8_t col, uint8_t *data) {
          return false;
  
      if (analog_matrix_mask[row] & (0x01 << col)) {
