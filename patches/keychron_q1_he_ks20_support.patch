@@ -1,0 +1,1075 @@
+﻿diff --git a/keyboards/keychron/common/analog_matrix/action_rapid_trigger.c b/keyboards/keychron/common/analog_matrix/action_rapid_trigger.c
+index 812c6dd..1eb75da 100644
+--- a/keyboards/keychron/common/analog_matrix/action_rapid_trigger.c
++++ b/keyboards/keychron/common/analog_matrix/action_rapid_trigger.c
+@@ -17,42 +17,50 @@
+ #include "analog_matrix.h"
+ 
+ bool rapid_trigger_action(analog_key_t *key) {
+-    bool   changed          = false;
+-    int8_t update_rapid_pts = 0;
++    bool    changed          = false;
++    int8_t  update_rapid_pts = 0;
++    uint8_t eff_sen          = key->rpd_trig_sen;
++    uint8_t eff_rls          = key->rpd_trig_sen_rls;
++
++    // In deeper travel (> 2.0mm) where Hall sensor approaches rail saturation,
++    // enforce a minimum 0.30mm (18 units) rapid window to prevent spring/saturation chatter
++    if (key->travel > 20 * TRAVEL_SCALE) {
++        if (eff_sen < 3 * TRAVEL_SCALE) eff_sen = 3 * TRAVEL_SCALE;
++        if (eff_rls < 3 * TRAVEL_SCALE) eff_rls = 3 * TRAVEL_SCALE;
++    }
+ 
+     switch (key->state) {
+         case AKS_REGULAR_RELEASED:
+-            // Chick first actuation
++            // First actuation
+             if (key->travel >= key->regular.actn_pt) {
+-                key->state = AKS_REGULAR_PRESSED;
+-                changed    = true;
+-                // First update rapid trigger point
++                key->state       = AKS_REGULAR_PRESSED;
++                changed          = true;
+                 update_rapid_pts = 1;
+             }
+             break;
+ 
+         case AKS_REGULAR_PRESSED:
+-            // Key releasing
+-            if (key->travel <= key->regular.deactn_pt) {
++            // Key releasing: full deactuation or rapid release outside bottom deadzone
++            if (key->travel == 0 || key->travel < key->regular.deactn_pt) {
+                 key->state = AKS_REGULAR_RELEASED;
+                 changed    = true;
+-            } else if (key->travel <= key->rapid.deactn_pt && key->travel < BOTTOM_DEAD_ZONE * TRAVEL_SCALE - key->rpd_trig_sen_rls) {
++            } else if (key->travel <= key->rapid.deactn_pt && key->travel < BOTTOM_DEAD_ZONE * TRAVEL_SCALE - eff_rls) {
+                 key->state       = AKS_RAPID_RELEASED;
+                 changed          = true;
+                 update_rapid_pts = -1;
+             }
+-            // Continue pressing
++            // Continue pressing deeper
+             else if (key->travel > key->rapid.actn_pt) {
+                 update_rapid_pts = 1;
+             }
+             break;
+ 
+         case AKS_RAPID_RELEASED:
+-            // Continue releasing
+-            if (key->travel <= key->regular.deactn_pt) {
++            // Continue releasing into upper zone
++            if (key->travel == 0 || key->travel <= key->regular.deactn_pt) {
+                 key->state = AKS_REGULAR_RELEASED;
+             }
+-            // Press again
++            // Press again (must be both >= rapid.actn_pt and >= regular.actn_pt)
+             else if (key->travel >= key->rapid.actn_pt && key->travel >= key->regular.actn_pt) {
+                 key->state       = AKS_RAPID_PRESSED;
+                 changed          = true;
+@@ -67,15 +75,15 @@ bool rapid_trigger_action(analog_key_t *key) {
+             if (key->travel > FULL_TRAVEL_UNIT * TRAVEL_SCALE) {
+                 break;
+             }
+-            if (key->travel <= key->regular.deactn_pt) {
++            if (key->travel == 0 || key->travel < key->regular.deactn_pt) {
+                 key->state = AKS_REGULAR_RELEASED;
+                 changed    = true;
+-            } else if (key->travel <= key->rapid.deactn_pt && key->travel < BOTTOM_DEAD_ZONE * TRAVEL_SCALE - key->rpd_trig_sen_rls) {
++            } else if (key->travel <= key->rapid.deactn_pt && key->travel < BOTTOM_DEAD_ZONE * TRAVEL_SCALE - eff_rls) {
+                 key->state       = AKS_RAPID_RELEASED;
+                 changed          = true;
+                 update_rapid_pts = -1;
+             }
+-            // Continue pressing
++            // Continue pressing deeper
+             else if (key->travel > key->rapid.actn_pt) {
+                 update_rapid_pts = 1;
+             }
+@@ -87,11 +95,11 @@ bool rapid_trigger_action(analog_key_t *key) {
+ 
+     if (update_rapid_pts) {
+         if (update_rapid_pts > 0) {
+-            key->rapid.deactn_pt = key->travel - key->rpd_trig_sen_rls > 0 ? key->travel - key->rpd_trig_sen_rls : 0;
++            key->rapid.deactn_pt = (key->travel > eff_rls) ? (key->travel - eff_rls) : 0;
+             key->rapid.actn_pt   = key->travel;
+         } else {
+             key->rapid.deactn_pt = key->travel;
+-            key->rapid.actn_pt   = key->travel + key->rpd_trig_sen;
++            key->rapid.actn_pt   = key->travel + eff_sen;
+         }
+     }
+ 
+diff --git a/keyboards/keychron/common/analog_matrix/analog_matrix.c b/keyboards/keychron/common/analog_matrix/analog_matrix.c
+index d4e64c0..a4b1dbc 100644
+--- a/keyboards/keychron/common/analog_matrix/analog_matrix.c
++++ b/keyboards/keychron/common/analog_matrix/analog_matrix.c
+@@ -115,6 +115,11 @@ extern void socd_action(void);
+ static calibrated_value_t calib_values[MATRIX_ROWS][MATRIX_COLS];
+ static calibrated_value_t saved_calib_values[MATRIX_ROWS][MATRIX_COLS];
+ static analog_key_t       analog_key_matrix[MATRIX_ROWS][MATRIX_COLS];
++static uint16_t           rev_ema[MATRIX_ROWS][MATRIX_COLS];
++static uint16_t           rev_rest_val[MATRIX_ROWS][MATRIX_COLS];
++static uint16_t           rev_rest_cnt[MATRIX_ROWS][MATRIX_COLS];
++static analog_key_t       col_saved_key[MATRIX_ROWS];
++static uint16_t           col_saved_ema[MATRIX_ROWS];
+ 
+ static uint16_t      calibrate_values[MATRIX_ROWS][MATRIX_COLS][CAL_SAMPL_CNT];
+ static calibration_t auto_calib[MATRIX_ROWS][MATRIX_COLS];
+@@ -139,22 +144,52 @@ uint8_t  analog_matrix_get_travel(uint8_t row, uint8_t col) {
+     return analog_key_matrix[row][col].travel;
+ }
+ 
+-static uint8_t convert_to_travel(uint8_t row, uint8_t col, uint16_t value) {
+-#define DEAD_ZONE 30
+-    uint16_t travel;
+-    int16_t  delta = calib_values[row][col].zero_travel - DEAD_ZONE - value;
++// 17-point saturation-compensation LUT mapping normalized ADC (0..1024, in 16 steps of 64)
++// to travel units (0..240, where 6 units = 0.1mm, 240 units = 4.0mm).
++// Compensates for the Q1 HE Hall sensor op-amp compression near the 3.3V (4094) rail:
++// - 0.0mm..1.0mm (0..60) spans the first ~48% of active ADC range (high resolution for 0.2mm-1.0mm)
++// - 1.0mm..2.5mm (60..150) spans ~48%..82% of active ADC range
++// - 2.5mm..3.8mm (150..228) spans ~82%..98.5% of active ADC range (true bottom-out required for 3.8mm)
++static const uint8_t ks20_travel_lut[17] = {
++      0,  10,  18,  26,  35,  44,  53,  63,
++     74,  86,  99, 114, 131, 151, 176, 206, 240
++};
+ 
+-    if (delta < 0) delta = 0;
++static uint8_t convert_to_travel(uint8_t row, uint8_t col, uint16_t value) {
++    if ((analog_matrix_mask[row] & (0x01 << col)) == 0) return 0;
+ 
+     calibrated_value_t *p_calib = &calib_values[row][col];
+ 
+-    int16_t offset = p_calib->zero_travel - REF_ZERO_TRAVEL;
+-    uint16_t x = value - offset;
++    uint16_t zero = p_calib->zero_travel;
++    uint16_t full = p_calib->full_travel;
++    if (full <= zero || full < 4050) full = 4094;
++
++    // Pure KS-20 Architecture: All switches rest around 3680-4020 and increase toward 4094 on press
++    int32_t full_delta = (int32_t)full - (int32_t)zero;
++    if (full_delta < 40) full_delta = DEFAULT_REV_FULL_RANGE;
+ 
+-    if (x > REF_ZERO_TRAVEL) return 0;
++    int32_t raw_delta = (int32_t)value - (int32_t)zero;
+ 
+-    travel = (uint16_t)((TRAVEL_POLYNOMIAL(x) - TRAVEL_POLYNOMIAL(REF_ZERO_TRAVEL)) * scale_factor[row][col] * TRAVEL_SCALE + 0.5);
+-    if (travel > (FULL_TRAVEL_UNIT + 1) * TRAVEL_SCALE - 1) travel = (FULL_TRAVEL_UNIT + 1) * TRAVEL_SCALE - 1;
++    // Keychron-style proportional resting deadzone (~8% of full range, clamped to 8..22 ADC counts):
++    // Absorbs thermal drift, power rail noise, and natural finger resting weight
++    int32_t dead_zone = (full_delta * 8) / 100;
++    if (dead_zone < 8) dead_zone = 8;
++    if (dead_zone > 22) dead_zone = 22;
++    if (raw_delta <= dead_zone) return 0;
++
++    // Preserve full upper ADC resolution up to full - 1 (4093..4094) so 3.8mm requires true bottom-out
++    int32_t eff_range = full_delta - dead_zone - 1;
++    if (eff_range < 20) eff_range = 20;
++
++    uint32_t norm = ((uint32_t)(raw_delta - dead_zone) << 10) / (uint32_t)eff_range;
++    if (norm >= 1024) return FULL_TRAVEL_UNIT * TRAVEL_SCALE;
++
++    uint32_t idx  = norm >> 6;
++    uint32_t frac = norm & 0x3F;
++    uint32_t y0   = ks20_travel_lut[idx];
++    uint32_t y1   = ks20_travel_lut[idx + 1];
++    uint16_t travel = (uint16_t)(y0 + (((y1 - y0) * frac + 32) >> 6));
++    if (travel > FULL_TRAVEL_UNIT * TRAVEL_SCALE) travel = FULL_TRAVEL_UNIT * TRAVEL_SCALE;
+ 
+     return travel & 0xFF;
+ }
+@@ -163,6 +198,7 @@ void update_key_config(uint8_t row, uint8_t col) {
+     analog_key_t            *p_key;
+     analog_key_config_t     *p_key_cfg;
+     analog_matrix_profile_t *cur_prof = profile_get_current();
++    extern matrix_row_t      analog_raw_matrix[MATRIX_ROWS];
+ 
+     p_key     = &analog_key_matrix[row][col];
+     p_key_cfg = &cur_prof->key_config[row][col];
+@@ -208,6 +244,43 @@ void update_key_config(uint8_t row, uint8_t col) {
+     p_key->rpd_trig_sen *= TRAVEL_SCALE;
+     p_key->rpd_trig_sen_rls *= TRAVEL_SCALE;
+ 
++    // Keychron original hysteresis & stability engineering for reverse-polarity (KS-20) switches
++    if (calib_values[row][col].full_travel > calib_values[row][col].zero_travel ||
++        calib_values[row][col].zero_travel >= REV_POLARITY_ZERO_THRESHOLD) {
++        if (p_key->regular.actn_pt < 2 * TRAVEL_SCALE) {
++            p_key->regular.actn_pt = 2 * TRAVEL_SCALE;
++        }
++        if (p_key->regular.actn_pt > 39 * TRAVEL_SCALE) {
++            p_key->regular.actn_pt = 39 * TRAVEL_SCALE;
++        }
++        // Keychron hysteresis calculation:
++        // - For ultra-short actuation (0.2mm - 0.3mm, <= 18 units): deactn_pt = 0 (releases cleanly at travel == 0)
++        // - For 0.4mm - 1.0mm (24 - 60 units): deactn_pt = actn_pt - 18 (Keychron standard 0.30mm hysteresis)
++        // - For > 1.0mm (> 60 units): deactn_pt = actn_pt - 24 (0.40mm hysteresis to absorb mid-stroke spring ringing)
++        if (p_key->regular.actn_pt <= 3 * TRAVEL_SCALE) {
++            p_key->regular.deactn_pt = 0;
++        } else if (p_key->regular.actn_pt <= 10 * TRAVEL_SCALE) {
++            p_key->regular.deactn_pt = p_key->regular.actn_pt - 3 * TRAVEL_SCALE;
++        } else {
++            p_key->regular.deactn_pt = p_key->regular.actn_pt - 4 * TRAVEL_SCALE;
++        }
++        if (p_key->rpd_trig_sen < 2 * TRAVEL_SCALE) {
++            p_key->rpd_trig_sen = 2 * TRAVEL_SCALE;
++        }
++        if (p_key->rpd_trig_sen_rls < 2 * TRAVEL_SCALE) {
++            p_key->rpd_trig_sen_rls = 2 * TRAVEL_SCALE;
++        }
++    }
++
++    // Re-evaluate key state immediately when actuation point changes so a key never stays stuck
++    if (p_key->value > 0) {
++        p_key->travel = convert_to_travel(row, col, p_key->value);
++    }
++    if (p_key->travel == 0 || p_key->travel < p_key->regular.deactn_pt) {
++        p_key->state = AKS_REGULAR_RELEASED;
++        analog_raw_matrix[row] &= ~(0x01 << col);
++    }
++
+     // Update advance mode information
+     if (p_key_cfg->adv_mode == AKM_DKS && p_key_cfg->okmc_idx < OKMC_COUNT) {
+         p_key->okmc_idx = p_key_cfg->okmc_idx;
+@@ -236,25 +309,38 @@ static void update_default_travel(void) {
+             if (saved_calib_values[r][c].zero_travel == 0)
+                 saved_calib_values[r][c].zero_travel = DEFAULT_ZERO_TRAVEL_VALUE;
+ 
+-            if (saved_calib_values[r][c].full_travel == 0)
+-                saved_calib_values[r][c].full_travel = saved_calib_values[r][c].zero_travel - DEFAULT_FULL_RANGE;
++            if (saved_calib_values[r][c].full_travel == 0) {
++                if (saved_calib_values[r][c].zero_travel < REV_POLARITY_ZERO_THRESHOLD) {
++                    saved_calib_values[r][c].full_travel = saved_calib_values[r][c].zero_travel - DEFAULT_FULL_RANGE;
++                } else {
++                    saved_calib_values[r][c].full_travel = 4094;
++                }
++            }
+         }
+     }
+-    // clang-format off
++    // clang-format on
+ }
+ 
+ static inline void update_scale_factor(uint8_t row, uint8_t col) {
+     calibrated_value_t *p_calib = &calib_values[row][col];
+ 
+     if (calibrated | CALI_FULL_TRAVEL) {
+-        int16_t offset      = p_calib->zero_travel - REF_ZERO_TRAVEL;
+-        uint16_t x          = p_calib->full_travel - offset;
++        int32_t full_delta = abs((int32_t)p_calib->full_travel - (int32_t)p_calib->zero_travel);
++        if (full_delta < 20) {
++            scale_factor[row][col] = 1.0f;
++            return;
++        }
++        int32_t x = (int32_t)REF_ZERO_TRAVEL - full_delta;
++        if (x < POLYNOMIAL_MIN_X) x = POLYNOMIAL_MIN_X;
++        if (x >= REF_ZERO_TRAVEL) {
++            scale_factor[row][col] = 1.0f;
++            return;
++        }
+ 
+-        float    full_travel = (TRAVEL_POLYNOMIAL(x) - TRAVEL_POLYNOMIAL(REF_ZERO_TRAVEL));
+-        scale_factor[row][col]   = FULL_TRAVEL_UNIT / full_travel;
++        float full_travel      = (TRAVEL_POLYNOMIAL(x) - TRAVEL_POLYNOMIAL(REF_ZERO_TRAVEL));
++        scale_factor[row][col] = (full_travel > 0.001f) ? (FULL_TRAVEL_UNIT / full_travel) : 1.0f;
+     } else
+         scale_factor[row][col] = 1.0f;
+-
+ }
+ 
+ static void update_scale_factors(void) {
+@@ -308,6 +394,7 @@ static void save_calibration_values(void) {
+     eeprom_update_block(saved_calib_values, (uint8_t *)addr, sizeof(saved_calib_values));
+ 
+     update_default_travel();
++    memcpy(calib_values, saved_calib_values, sizeof(saved_calib_values));
+     update_travel_configs();
+     update_scale_factors();
+ }
+@@ -327,24 +414,49 @@ static bool calibrate(void) {
+                 if ((analog_matrix_mask[r] & (0x01<<c)) == 0) continue;
+ 
+                 uint32_t sum = 0;
+-                for (uint8_t i=0; i<CAL_SAMPL_CNT; i++) {
+-                    if (calibrate_values[r][c][cur_calib] > VALID_ANALOG_RAW_VALUE_MIN)
+-                        sum += calibrate_values[r][c][cur_calib];
++                for (uint8_t i = 0; i < CAL_SAMPL_CNT; i++) {
++                    if (calibrate_values[r][c][i] > VALID_ANALOG_RAW_VALUE_MIN)
++                        sum += calibrate_values[r][c][i];
+                     else {
+                         sum = 0;
+                         break;
+                     }
+                 }
+ 
+-                if (sum) {
+-                    uint16_t avg = sum/CAL_SAMPL_CNT;
+-                    // clang-format off
+-                    if ((calib_values[r][c].full_travel == 0 && avg < calib_values[r][c].zero_travel - DEFAULT_FULL_RANGE + 100) ||
+-                        (calib_values[r][c].full_travel != 0 && avg + BOTTOM_JITTER < calib_values[r][c].full_travel)) {
+-                        // clang-format on
+-                        saved_calib_values[r][c].zero_travel = calib_values[r][c].zero_travel;
+-                        saved_calib_values[r][c].full_travel = calib_values[r][c].full_travel = avg + BOTTOM_JITTER;
++                if (sum && calib_values[r][c].zero_travel != 0) {
++                    uint16_t avg  = sum / CAL_SAMPL_CNT;
++                    uint16_t zero = calib_values[r][c].zero_travel;
++                    uint16_t full = calib_values[r][c].full_travel;
++                    int32_t  diff = (int32_t)avg - (int32_t)zero;
++                    bool     updated_key = false;
++
++                    if (diff < 0 && zero < REV_POLARITY_ZERO_THRESHOLD) {
++                        // Normal polarity (e.g. KS-37B: zero ~3065, ADC decreases when pressed)
++                        if ((full == 0 && (zero - avg) > MIN_FULL_TRAVEL_RANGE) ||
++                            (full != 0 && full < zero && (avg + BOTTOM_JITTER) < full)) {
++                            uint16_t adj_full = avg + BOTTOM_JITTER;
++                            if (adj_full >= zero) adj_full = avg;
++                            saved_calib_values[r][c].zero_travel = zero;
++                            saved_calib_values[r][c].full_travel = calib_values[r][c].full_travel = adj_full;
++                            updated_key = true;
++                        }
++                    } else if (diff > 0 && zero >= REV_POLARITY_ZERO_THRESHOLD) {
++                        // Reverse polarity (e.g. KS-20: zero ~3830..4010, ADC increases toward 4094 when pressed)
++                        // Require avg >= 4080 (or zero + 65 for high-zero switches) so keys only register full travel at true bottom-out
++                        uint16_t min_bot = (zero > 4010) ? (zero + 65) : 4080;
++                        if (min_bot > 4092) min_bot = 4092;
++                        if (avg >= min_bot &&
++                            ((full == 0 && (avg - zero) >= MIN_REV_FULL_TRAVEL_RANGE) ||
++                             (full != 0 && full > zero && avg > full))) {
++                            uint16_t adj_full = avg;
++                            if (adj_full > 4094) adj_full = 4094;
++                            saved_calib_values[r][c].zero_travel = zero;
++                            saved_calib_values[r][c].full_travel = calib_values[r][c].full_travel = adj_full;
++                            updated_key = true;
++                        }
++                    }
+ 
++                    if (updated_key) {
+                         calib_state_matrix[r] |= (0x01 << c);
+                         calib_ind_timer = timer_read32();
+                         last_calib_row  = r;
+@@ -376,8 +488,6 @@ static bool calibrate(void) {
+             return false;
+         }
+ 
+-        bool valid = true;
+-
+         for (uint8_t r = 0; r < MATRIX_ROWS; r++)
+             for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+                 if ((analog_matrix_mask[r] & (0x01 << c)) == 0) continue;
+@@ -388,49 +498,74 @@ static bool calibrate(void) {
+ 
+                 uint16_t avg_val = sum / CAL_SAMPL_CNT;
+ 
+-                // Check validity
+-                if (avg_val > VALID_ANALOG_RAW_VALUE_MAX || avg_val < DEFAULT_ZERO_TRAVEL_VALUE - DEFAULT_FULL_RANGE / 5) {
+-                    if (cali_state == CALIB_ZERO_TRAVEL_POWER_ON) valid = false;
+-                    manual_calib_zero_invalid[r] |= 0x01 << c;
+-                    if (avg_val < DEFAULT_ZERO_TRAVEL_VALUE - DEFAULT_FULL_RANGE / 5 && cali_state == CALIB_ZERO_TRAVEL_POWER_ON) {
+-                        auto_calib[r][c].pressed = true;
++                if (cali_state == CALIB_ZERO_TRAVEL_MANUAL) {
++                    // Polarity-agnostic manual zero travel check: accept any valid 12-bit sensor reading
++                    if (avg_val > VALID_ANALOG_RAW_VALUE_MAX || avg_val < VALID_ANALOG_RAW_VALUE_MIN) {
++                        manual_calib_zero_invalid[r] |= 0x01 << c;
++                    } else {
++                        // Store raw resting value without directional deadzone shift;
++                        // deadzone is enforced directionally in convert_to_travel()
++                        calib_values[r][c].zero_travel = avg_val;
+                     }
+                 } else {
+-                    // new_calibrated_value[r][c] = avg_val;
+-                    avg_val -= ZERO_TRAVEL_DEAD_ZONE;
+-                    if (abs(avg_val - calib_values[r][c].zero_travel) > 30) {
+-                        auto_calib[r][c].new_calib_value = true;
+-                        // Update calibration value
+-                        calib_values[r][c].zero_travel = avg_val;
+-
+-                        if (cali_state == CALIB_ZERO_TRAVEL_POWER_ON) calib_values[r][c].full_travel = avg_val - DEFAULT_FULL_RANGE;
++                    // CALIB_ZERO_TRAVEL_POWER_ON: adopt current power-on resting ADC in RAM so cold/warm boot
++                    // never false-triggers bootmagic DFU or ghost-presses, while preserving valid EEPROM calibration
++                    bool key_invalid = (avg_val > VALID_ANALOG_RAW_VALUE_MAX || avg_val < VALID_ANALOG_RAW_VALUE_MIN);
++                    if (!key_invalid) {
++                        bool is_rev_key = (avg_val >= REV_POLARITY_ZERO_THRESHOLD);
++                        if (is_rev_key) {
++                            if (avg_val < 4050) {
++                                calib_values[r][c].zero_travel = avg_val;
++                            }
++                            if (calib_values[r][c].full_travel <= calib_values[r][c].zero_travel ||
++                                calib_values[r][c].full_travel < 4075) {
++                                calib_values[r][c].full_travel = 4094;
++                            }
++                            update_scale_factor(r, c);
++                            update_key_config(r, c);
++                        } else {
++                            if (abs((int32_t)avg_val - (int32_t)calib_values[r][c].zero_travel) > 15) {
++                                calib_values[r][c].zero_travel = avg_val;
++                                calib_values[r][c].full_travel = avg_val - DEFAULT_FULL_RANGE;
++                                update_scale_factor(r, c);
++                                update_key_config(r, c);
++                            }
++                        }
+                     }
+                 }
+             }
+ 
+         if (cali_state == CALIB_ZERO_TRAVEL_MANUAL) {
++            cur_calib  = 0;
+             cali_state = CALIB_FULL_TRAVEL_MANUAL;
+-        } else if (valid && (calibrated & CALI_ZERO_TRAVEL) == 0) {
+-            for (uint8_t r = 0; r < MATRIX_ROWS; r++)
++        } else {
++            for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+                 for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+-                    saved_calib_values[r][c].zero_travel = calib_values[r][c].zero_travel;
++                    if ((analog_matrix_mask[r] & (0x01 << c)) == 0) continue;
++                    if ((calibrated & CALI_ZERO_TRAVEL) == 0 ||
++                        saved_calib_values[r][c].zero_travel < REV_POLARITY_ZERO_THRESHOLD ||
++                        saved_calib_values[r][c].zero_travel > 4050) {
++                        saved_calib_values[r][c].zero_travel = calib_values[r][c].zero_travel;
++                    }
+                 }
+-
+-            update = true;
+-        }
+-
+-        if (valid)
++            }
+             calibrated |= CALI_ZERO_TRAVEL;
+-        else
+             cali_state = CALIB_OFF;
++        }
+     } else if (cali_state == CALIB_SAVE_AND_EXIT) {
+         if (last_cali_state == CALIB_FULL_TRAVEL_MANUAL) {
+             update = true;
+             for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+                 for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+-                    if ((analog_matrix_mask[r] & (0x01 << c)) && calib_values[r][c].full_travel == 0) {
+-                        calib_values[r][c].full_travel = saved_calib_values[r][c].full_travel;
++                    if ((analog_matrix_mask[r] & (0x01 << c)) == 0) continue;
++                    if (calib_values[r][c].full_travel == 0 || calib_values[r][c].full_travel <= calib_values[r][c].zero_travel) {
++                        if (saved_calib_values[r][c].zero_travel != 0) {
++                            calib_values[r][c].zero_travel = saved_calib_values[r][c].zero_travel;
++                        }
++                        calib_values[r][c].full_travel = 4094;
+                     }
++                    saved_calib_values[r][c].zero_travel = calib_values[r][c].zero_travel;
++                    saved_calib_values[r][c].full_travel = calib_values[r][c].full_travel;
+                 }
+             }
+         }
+@@ -462,9 +597,26 @@ void calibration_validate(void) {
+         for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+             if ((analog_matrix_mask[r] & (0x01 << c)) == 0) continue;
+ 
+-            if (saved_calib_values[r][c].zero_travel < DEFAULT_ZERO_TRAVEL_VALUE - DEFAULT_FULL_RANGE / 5) {
+-                saved_calib_values[r][c].zero_travel = DEFAULT_ZERO_TRAVEL_VALUE;
+-                saved_calib_values[r][c].full_travel = saved_calib_values[r][c].zero_travel - DEFAULT_FULL_RANGE;
++            uint16_t zero = saved_calib_values[r][c].zero_travel;
++            uint16_t full = saved_calib_values[r][c].full_travel;
++            bool     is_rev = (zero >= REV_POLARITY_ZERO_THRESHOLD);
++            bool     invalid = (zero < VALID_ANALOG_RAW_VALUE_MIN || zero > VALID_ANALOG_RAW_VALUE_MAX ||
++                                full < VALID_ANALOG_RAW_VALUE_MIN || full > VALID_ANALOG_RAW_VALUE_MAX);
++            if (!invalid) {
++                if (is_rev) {
++                    if (full <= zero || (full - zero) < MIN_REV_FULL_TRAVEL_RANGE || full < MIN_REV_BOTTOM_OUT_ADC) invalid = true;
++                } else {
++                    if (full >= zero || (zero - full) < MIN_FULL_TRAVEL_RANGE) invalid = true;
++                }
++            }
++
++            if (invalid) {
++                if (is_rev && zero < MIN_REV_BOTTOM_OUT_ADC) {
++                    saved_calib_values[r][c].full_travel = 4094;
++                } else {
++                    saved_calib_values[r][c].zero_travel = DEFAULT_ZERO_TRAVEL_VALUE;
++                    saved_calib_values[r][c].full_travel = DEFAULT_ZERO_TRAVEL_VALUE - DEFAULT_FULL_RANGE;
++                }
+             }
+         }
+ }
+@@ -477,35 +629,53 @@ void auto_calibration_init(void) {
+ }
+ 
+ void auto_caliration_check(uint8_t row, uint8_t col, uint16_t value) {
+-    calibration_t *p = &auto_calib[row][col];
++    calibration_t *     p      = &auto_calib[row][col];
++    calibrated_value_t *cur_c  = &calib_values[row][col];
++    bool                is_rev = (cur_c->full_travel > cur_c->zero_travel || cur_c->zero_travel >= REV_POLARITY_ZERO_THRESHOLD);
++    if (is_rev) return; // Preserve manual calibration on reverse-polarity keys
+ 
+     switch (p->state) {
+         case AUTO_CALIB_OFF:
+             if (p->pressed) {
+-                if (value > DEFAULT_ZERO_TRAVEL_VALUE - DEFAULT_FULL_RANGE / 5) {
+-                    p->pressed = false;
+-                } else
+-                    return;
++                if (is_rev) {
++                    if ((int32_t)value < (int32_t)cur_c->zero_travel + (DEFAULT_FULL_RANGE / 5)) {
++                        p->pressed = false;
++                    } else
++                        return;
++                } else {
++                    if ((int32_t)value > (int32_t)cur_c->zero_travel - (DEFAULT_FULL_RANGE / 5)) {
++                        p->pressed = false;
++                    } else
++                        return;
++                }
+             }
+             p->state      = AUTO_CALIB_NEXT_LOOP; // fall through
+             p->confidence = 0;
+             break;
+ 
+         case AUTO_CALIB_NEXT_LOOP:
+-            if (value < AUTO_CALIB_FULL_TRAVEL_THRESHOLD_VALUE) {
+-                p->value.full_travel = value;
+-                p->state             = AUTO_CALIB_FULL_TRAVEL;
+-                p->full_travel_time  = timer_read32();
++            if (is_rev) {
++                if ((int32_t)value > (int32_t)cur_c->zero_travel + DEFAULT_FULL_RANGE - 100) {
++                    p->value.full_travel = value;
++                    p->state             = AUTO_CALIB_FULL_TRAVEL;
++                    p->full_travel_time  = timer_read32();
++                }
++            } else {
++                if ((int32_t)value < (int32_t)cur_c->zero_travel - DEFAULT_FULL_RANGE + 100) {
++                    p->value.full_travel = value;
++                    p->state             = AUTO_CALIB_FULL_TRAVEL;
++                    p->full_travel_time  = timer_read32();
++                }
+             }
+             break;
+ 
+         case AUTO_CALIB_ZERO_TRAVEL:
+-            if (value > p->value.zero_travel) {
+-                // Key continues releasing
++            if ((!is_rev && value > p->value.zero_travel) || (is_rev && value < p->value.zero_travel)) {
++                // Key continues releasing toward rest
+                 p->value.zero_travel = value;
+                 p->cycle             = 0;
+-            } else if (abs(p->value.zero_travel - value) <= AUTO_CALIB_ZERO_TRAVEL_JITTER_VALUE) {
+-                //  Add the data to buffer
++            } else if (abs((int32_t)p->value.zero_travel - (int32_t)value) <= AUTO_CALIB_ZERO_TRAVEL_JITTER_VALUE) {
++                // Add the data to buffer
+                 calibrate_values[row][col][p->cycle++] = value;
+                 if (p->cycle >= CAL_SAMPL_CNT) {
+                     if (timer_elapsed32(p->full_travel_time) < AUTO_CALIB_VALID_RELASING_TIME) {
+@@ -514,16 +684,15 @@ void auto_caliration_check(uint8_t row, uint8_t col, uint16_t value) {
+                             avg_val += calibrate_values[row][col][i];
+ 
+                         avg_val /= CAL_SAMPL_CNT;
+-                        avg_val -= ZERO_TRAVEL_DEAD_ZONE;
+-
+                         p->value.zero_travel = avg_val;
+ 
++                        int32_t range = abs((int32_t)avg_val - (int32_t)p->value.full_travel);
+                         // Update confidence
+-                        if (avg_val - p->value.full_travel > 1100) {
++                        if (range > 1100) {
+                             p->confidence += p->calibrated ? 12 : 6;
+-                        } else if (avg_val - p->value.full_travel > 1000) {
++                        } else if (range > 1000) {
+                             p->confidence += p->calibrated ? 4 : 3;
+-                        } else if (avg_val - p->value.full_travel > 900) {
++                        } else if (range > 900) {
+                             p->confidence += p->calibrated ? 3 : 2;
+                         }
+                     }
+@@ -537,17 +706,21 @@ void auto_caliration_check(uint8_t row, uint8_t col, uint16_t value) {
+             if (p->confidence >= 12) {
+                 p->state = AUTO_CALIB_FINISHED;
+ 
+-                if (abs(p->value.zero_travel - calib_values[row][col].zero_travel) > 10 || abs(p->value.full_travel + BOTTOM_JITTER - calib_values[row][col].full_travel) > 30) {
++                uint16_t adj_full = is_rev ? (p->value.full_travel - BOTTOM_JITTER) : (p->value.full_travel + BOTTOM_JITTER);
++
++                if (abs((int32_t)p->value.zero_travel - (int32_t)calib_values[row][col].zero_travel) > 10 ||
++                    abs((int32_t)adj_full - (int32_t)calib_values[row][col].full_travel) > 30) {
+                     calib_values[row][col].zero_travel = p->value.zero_travel;
+-                    calib_values[row][col].full_travel = p->value.full_travel + BOTTOM_JITTER;
++                    calib_values[row][col].full_travel = adj_full;
+ 
+-                    if (abs(saved_calib_values[row][col].zero_travel - calib_values[row][col].zero_travel) > 15 || abs(saved_calib_values[row][col].full_travel - calib_values[row][col].full_travel) > 50) {
++                    if (abs((int32_t)saved_calib_values[row][col].zero_travel - (int32_t)calib_values[row][col].zero_travel) > 15 ||
++                        abs((int32_t)saved_calib_values[row][col].full_travel - (int32_t)calib_values[row][col].full_travel) > 50) {
+                         /* Save */
+                         saved_calib_values[row][col].zero_travel = calib_values[row][col].zero_travel;
+                         saved_calib_values[row][col].full_travel = calib_values[row][col].full_travel;
+                         save_calibration_value(row, col);
+                     } else {
+-                        calib_values[row][col].full_travel = p->value.full_travel - 15;
++                        calib_values[row][col].full_travel = is_rev ? (p->value.full_travel + 15) : (p->value.full_travel - 15);
+                     }
+ 
+                     update_default_travel();
+@@ -558,23 +731,43 @@ void auto_caliration_check(uint8_t row, uint8_t col, uint16_t value) {
+             break;
+ 
+         case AUTO_CALIB_FULL_TRAVEL:
+-            if (value < p->value.full_travel) {
+-                // Key continues pressing
+-                p->value.full_travel = value;
+-                p->full_travel_time  = timer_read32();
+-            } else if (value - p->value.full_travel <= AUTO_CALIB_FULL_TRAVEL_JITTER_VALUE) {
+-                // Key is still pressed, we encounter system noise value jitter, just update the time
+-                p->full_travel_time = timer_read32();
+-            } else if (value - p->value.full_travel > AUTO_CALIB_ZERO_TRAVEL_THRESHOLD_VALUE) {
+-                // Key releasing detected
+-                p->value.zero_travel = value;
+-                p->state             = AUTO_CALIB_ZERO_TRAVEL;
+-                p->cycle             = 0;
++            if (!is_rev) {
++                if (value < p->value.full_travel) {
++                    // Key continues pressing
++                    p->value.full_travel = value;
++                    p->full_travel_time  = timer_read32();
++                } else if (value - p->value.full_travel <= AUTO_CALIB_FULL_TRAVEL_JITTER_VALUE) {
++                    // Key is still pressed, system noise jitter
++                    p->full_travel_time = timer_read32();
++                } else if (value - p->value.full_travel > AUTO_CALIB_ZERO_TRAVEL_THRESHOLD_VALUE) {
++                    // Key releasing detected
++                    p->value.zero_travel = value;
++                    p->state             = AUTO_CALIB_ZERO_TRAVEL;
++                    p->cycle             = 0;
++                }
++            } else {
++                if (value > p->value.full_travel) {
++                    // Key continues pressing (reverse polarity)
++                    p->value.full_travel = value;
++                    p->full_travel_time  = timer_read32();
++                } else if (p->value.full_travel - value <= AUTO_CALIB_FULL_TRAVEL_JITTER_VALUE) {
++                    // Key is still pressed, system noise jitter
++                    p->full_travel_time = timer_read32();
++                } else if (p->value.full_travel - value > AUTO_CALIB_ZERO_TRAVEL_THRESHOLD_VALUE) {
++                    // Key releasing detected
++                    p->value.zero_travel = value;
++                    p->state             = AUTO_CALIB_ZERO_TRAVEL;
++                    p->cycle             = 0;
++                }
+             }
+             break;
+ 
+         case AUTO_CALIB_FINISHED:
+-            if (value > p->value.zero_travel + 50) p->state = AUTO_CALIB_OFF;
++            if (!is_rev) {
++                if (value > p->value.zero_travel + 50) p->state = AUTO_CALIB_OFF;
++            } else {
++                if (value + 50 < p->value.zero_travel) p->state = AUTO_CALIB_OFF;
++            }
+             break;
+ 
+         default:
+@@ -632,29 +825,21 @@ void analog_matrix_eeconfig_init(void) {
+         }
+     }
+ 
+-    // Reset to default if calibrated data is invalid
+-    for (uint8_t r=0; r<MATRIX_ROWS; r++)
+-        for (uint8_t c=0; c<MATRIX_COLS; c++) {
+-            if ((analog_matrix_mask[r] & (0x01U << c)) == 0) continue;
+-            if (saved_calib_values[r][c].zero_travel > VALID_ANALOG_RAW_VALUE_MAX || saved_calib_values[r][c].zero_travel < DEFAULT_ZERO_TRAVEL_VALUE - 300)
+-                saved_calib_values[r][c].zero_travel = DEFAULT_ZERO_TRAVEL_VALUE;
+-
+-            if (saved_calib_values[r][c].full_travel > DEFAULT_FULL_TRAVEL_VALUE + 400 || saved_calib_values[r][c].full_travel < VALID_ANALOG_RAW_VALUE_MIN)
+-                saved_calib_values[r][c].full_travel = saved_calib_values[r][c].zero_travel - DEFAULT_FULL_RANGE;
+-        }
+-
+-    if (calibrated) {
+-        calibration_validate();
+-        update_default_travel();
+-    }
++    // Validate calibrated data (supports both normal KS-37B and reverse-polarity KS-20)
++    calibration_validate();
++    update_default_travel();
+     memcpy(calib_values, saved_calib_values, sizeof(saved_calib_values));
+ 
+     // Load actuation/deacuation dat
+     memset(analog_key_matrix, 0, sizeof(analog_key_matrix));
++    memset(rev_ema, 0, sizeof(rev_ema));
++    memset(rev_rest_val, 0, sizeof(rev_rest_val));
++    memset(rev_rest_cnt, 0, sizeof(rev_rest_cnt));
+     update_travel_configs();
+     update_scale_factors();
+ 
+     auto_calibration_init();
++    cur_calib  = 0;
+     cali_state = CALIB_ZERO_TRAVEL_POWER_ON;
+ 
+     free(buf);
+@@ -668,28 +853,71 @@ void analog_matrix_init(void) {
+     cur_calib = 0;
+     memset(calibrate_values, 0, MATRIX_ROWS * MATRIX_COLS * CAL_SAMPL_CNT * sizeof(calibrate_values[0][0][0]));
+ 
+-    // 解决 boot magic 扫描无效, TODO: 这里会增加启动时间
++    // Settle analog matrix and scan
+     for (uint8_t i = 0; i < CAL_SAMPL_CNT; i++)
+         matrix_scan();
++
++    // Check if Esc (Row 0, Col 0) is held down on boot for DFU entry
++    // On pure KS-20 setup, resting ADC is ~3950. When pressed down, ADC rises to > 4060
++    uint16_t esc_adc = analog_key_matrix[0][0].value;
++    if (esc_adc >= 4050) {
++        // Esc is held down on plug-in! Jump to STM32 DFU bootloader immediately
++        bootloader_jump();
++    }
++}
++
++void analog_matrix_save_col_state(uint8_t col) {
++    for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
++        col_saved_key[r] = analog_key_matrix[r][col];
++        col_saved_ema[r] = rev_ema[r][col];
++    }
++}
++
++void analog_matrix_restore_col_state(uint8_t col) {
++    for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
++        analog_key_matrix[r][col] = col_saved_key[r];
++        rev_ema[r][col]           = col_saved_ema[r];
++    }
+ }
+ 
+ bool update_raw_value(uint8_t row, uint8_t col, uint16_t value) {
++    if ((analog_matrix_mask[row] & (0x01 << col)) == 0) return false;
+     if (value < VALID_ANALOG_RAW_VALUE_MIN || value > VALID_ANALOG_RAW_VALUE_MAX) return false;
+ 
+     if (cali_state) {
+         calibrate_values[row][col][cur_calib] = value;
+         analog_key_matrix[row][col].value     = value; // for debug
++        rev_ema[row][col]                     = value << 2;
+         return false;
+     }
+-    auto_caliration_check(row, col, value);
+ 
+     analog_key_t *k = &analog_key_matrix[row][col];
+ 
+-    if (abs(k->last_val - value) < 5) return false;
++    // Initialize EMA filter if needed
++    if (rev_ema[row][col] == 0) {
++        rev_ema[row][col] = value << 2;
++    }
++
++    // 4-tap Exponential Moving Average (EMA) filter:
++    // Suppresses ADC power/multiplexer white noise (±3-5 counts) down to < 0.5 count
++    rev_ema[row][col] = (rev_ema[row][col] * 3 + (value << 2)) >> 2;
++    uint16_t smooth_val = (rev_ema[row][col] + 2) >> 2;
++
++    k->value = smooth_val;
++
++    // Mid-stroke ADC deadband (Schmitt trigger):
++    // Rejects 1-count sensor micro-jitter in mid-stroke, while ALWAYS allowing immediate
++    // updates inside the resting deadzone (<= zero + 22) and near bottom-out (>= full - 4).
++    uint16_t zero = calib_values[row][col].zero_travel;
++    uint16_t full = calib_values[row][col].full_travel;
++    if (full <= zero) full = 4094;
++    if (smooth_val > zero + 22 && smooth_val + 4 < full && abs((int32_t)k->last_val - (int32_t)smooth_val) < 2) {
++        return false;
++    }
++    if (k->last_val == smooth_val) return false;
+ 
+-    k->last_val = value;
+-    k->value    = value;
+-    k->travel   = convert_to_travel(row, col, value);
++    k->last_val = smooth_val;
++    k->travel   = convert_to_travel(row, col, smooth_val);
+ 
+     if (k->travel == k->last_travel) return false;
+ 
+@@ -770,6 +998,9 @@ bool set_calibrate(uint8_t *data) {
+             calib_ind_timer = 0;
+ 
+             memset(calib_values, 0, sizeof(calib_values));
++            memset(rev_ema, 0, sizeof(rev_ema));
++            memset(rev_rest_val, 0, sizeof(rev_rest_val));
++            memset(rev_rest_cnt, 0, sizeof(rev_rest_cnt));
+             memset(calib_state_matrix, 0, sizeof(calib_state_matrix));
+             memset(manual_calib_zero_invalid, 0, sizeof(manual_calib_zero_invalid));
+             break;
+@@ -811,7 +1042,79 @@ bool get_realtime_travel(uint8_t *data) {
+     return true;
+ }
+ 
++static inline void track_resting_baseline(uint8_t row, uint8_t col, uint16_t value) {
++    calibrated_value_t *p_calib = &calib_values[row][col];
++    analog_key_t       *k       = &analog_key_matrix[row][col];
++    extern matrix_row_t analog_raw_matrix[MATRIX_ROWS];
++
++    if (p_calib->zero_travel == 0 || value < REV_POLARITY_ZERO_THRESHOLD) return;
++
++    int32_t raw_delta = (int32_t)value - (int32_t)p_calib->zero_travel;
++    int32_t diff      = (int32_t)value - (int32_t)rev_rest_val[row][col];
++
++    // 3-TIER BIDIRECTIONAL TOP-STOP BASELINE TRACKER:
++    // On Q1 HE with KS-20 switches, PCB thermal warm-up (from RGB LEDs/MCU) and mechanical stem seating
++    // after a press can shift the physical top-stop resting ADC either downward OR upward by up to ~65 counts
++    // while remaining well inside the resting band (< 4030).
++    // Meanwhile, a human finger holding a key partially depressed mid-stroke ALWAYS exhibits micro-tremor (> ±1 count)
++    // and/or sits at higher ADC (> 4025).
++    if (k->state == AKS_REGULAR_RELEASED && k->travel == 0 && value < 4035) {
++        // Tier 1: Key is released and inside the resting deadzone (downward or minor upward settle)
++        if (abs(diff) <= 1) {
++            if (++rev_rest_cnt[row][col] >= 250) {
++                rev_rest_cnt[row][col] = 0;
++                p_calib->zero_travel   = value;
++            }
++        } else {
++            rev_rest_val[row][col] = value;
++            rev_rest_cnt[row][col] = 0;
++        }
++    } else if (k->state == AKS_REGULAR_RELEASED && raw_delta > 0 && raw_delta <= 80 && value < 4030) {
++        // Tier 2: Key is released (e.g. actuation >= 0.5mm), but warm-up or stem seating shifted top-stop
++        // slightly above the deadzone (travel > 0 while untouched). Re-zero after 600ms of ±1 count stillness.
++        if (abs(diff) <= 1) {
++            if (++rev_rest_cnt[row][col] >= 600) {
++                rev_rest_cnt[row][col] = 0;
++                p_calib->zero_travel   = value;
++                k->travel              = 0;
++                k->last_travel         = 0;
++            }
++        } else {
++            rev_rest_val[row][col] = value;
++            rev_rest_cnt[row][col] = 0;
++        }
++    } else if (k->state != AKS_REGULAR_RELEASED && raw_delta > 0 && raw_delta <= 75 && value < 4025) {
++        // Tier 3: Stuck-at-top-stop recovery for ultra-shallow actuation (0.1mm - 0.3mm).
++        // If a key's resting baseline drifted upward or stem seated slightly higher upon release so it got
++        // trapped at top-stop (< 4025) with motionless ±1 count stability for 1.5 seconds, re-zero and release it.
++        if (abs(diff) <= 1) {
++            if (++rev_rest_cnt[row][col] >= 1500) {
++                rev_rest_cnt[row][col]  = 0;
++                p_calib->zero_travel    = value;
++                k->travel               = 0;
++                k->last_travel          = 0;
++                k->state                = AKS_REGULAR_RELEASED;
++                analog_raw_matrix[row] &= ~(0x01 << col);
++            }
++        } else {
++            rev_rest_val[row][col] = value;
++            rev_rest_cnt[row][col] = 0;
++        }
++    } else {
++        rev_rest_val[row][col] = value;
++        rev_rest_cnt[row][col] = 0;
++    }
++}
++
+ void analog_matrix_task(void) {
++    if (cali_state == CALIB_OFF) {
++        for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
++            for (uint8_t c = 0; c < MATRIX_COLS; c++) {
++                if ((analog_matrix_mask[r] & (0x01 << c)) == 0) continue;
++                track_resting_baseline(r, c, analog_key_matrix[r][c].value);
++            }
++        }
++    }
+     calibrate();
+     profile_indication_timer_check();
+     socd_action();
+@@ -850,10 +1153,13 @@ static bool get_calibrated_value(uint8_t row, uint8_t col, uint8_t *data) {
+         return false;
+ 
+     if (analog_matrix_mask[row] & (0x01 << col)) {
+-        data[i++] = saved_calib_values[row][col].zero_travel & 0xFF;
+-        data[i++] = (saved_calib_values[row][col].zero_travel >> 8) & 0xFF;
+-        data[i++] = saved_calib_values[row][col].full_travel & 0xFF;
+-        data[i++] = (saved_calib_values[row][col].full_travel >> 8) & 0xFF;
++        uint16_t z = calib_values[row][col].zero_travel;
++        uint16_t f = calib_values[row][col].full_travel;
++        if (f == 0 && z != 0) f = 4094;
++        data[i++] = z & 0xFF;
++        data[i++] = (z >> 8) & 0xFF;
++        data[i++] = f & 0xFF;
++        data[i++] = (f >> 8) & 0xFF;
+     } else {
+         memset(data + i, 0, 4);
+         i += 4;
+diff --git a/keyboards/keychron/common/analog_matrix/analog_matrix.h b/keyboards/keychron/common/analog_matrix/analog_matrix.h
+index cc2b2a6..59b1b5b 100644
+--- a/keyboards/keychron/common/analog_matrix/analog_matrix.h
++++ b/keyboards/keychron/common/analog_matrix/analog_matrix.h
+@@ -44,11 +44,39 @@
+ #define DEFAULT_FULL_TRAVEL_VALUE (DEFAULT_ZERO_TRAVEL_VALUE - DEFAULT_FULL_RANGE)
+ 
+ #ifndef VALID_ANALOG_RAW_VALUE_MIN
+-#    define VALID_ANALOG_RAW_VALUE_MIN 1200
++#    define VALID_ANALOG_RAW_VALUE_MIN 100
+ #endif
+ 
+ #ifndef VALID_ANALOG_RAW_VALUE_MAX
+-#    define VALID_ANALOG_RAW_VALUE_MAX 3500
++#    define VALID_ANALOG_RAW_VALUE_MAX 4095
++#endif
++
++#ifndef REV_POLARITY_ZERO_THRESHOLD
++#    define REV_POLARITY_ZERO_THRESHOLD 3450
++#endif
++
++#ifndef MIN_FULL_TRAVEL_RANGE
++#    define MIN_FULL_TRAVEL_RANGE 400
++#endif
++
++#ifndef MIN_REV_FULL_TRAVEL_RANGE
++#    define MIN_REV_FULL_TRAVEL_RANGE 20
++#endif
++
++#ifndef MIN_REV_BOTTOM_OUT_ADC
++#    define MIN_REV_BOTTOM_OUT_ADC 4050
++#endif
++
++#ifndef DEFAULT_REV_FULL_RANGE
++#    define DEFAULT_REV_FULL_RANGE 120
++#endif
++
++#ifndef BOTTOM_JITTER_REV
++#    define BOTTOM_JITTER_REV 1
++#endif
++
++#ifndef POLYNOMIAL_MIN_X
++#    define POLYNOMIAL_MIN_X 1200
+ #endif
+ 
+ #ifndef STATIC_HYSTERESIS
+@@ -110,6 +138,8 @@
+ void analog_matrix_init(void);
+ void analog_matrix_eeconfig_init(void);
+ bool update_raw_value(uint8_t row, uint8_t col, uint16_t value);
++void analog_matrix_save_col_state(uint8_t col);
++void analog_matrix_restore_col_state(uint8_t col);
+ void update_travel_configs(void);
+ void update_key_config(uint8_t row, uint8_t col);
+ 
+diff --git a/keyboards/keychron/common/analog_matrix/analog_matrix_scan.c b/keyboards/keychron/common/analog_matrix/analog_matrix_scan.c
+index a69a0c6..e873572 100644
+--- a/keyboards/keychron/common/analog_matrix/analog_matrix_scan.c
++++ b/keyboards/keychron/common/analog_matrix/analog_matrix_scan.c
+@@ -150,31 +150,37 @@ void select_all_cols(void) { }
+ static void unselect_cols(void) { }
+ 
+ void matrix_read_rows_on_col(uint8_t current_col, matrix_row_t row_shifter) {
+-
+     // Select col
+     if (!select_col(current_col)) {
+         return;                     // skip NO_PIN col
+     }
+ 
+-    wait_us(40);
++    wait_us(50);
+ 
+     uint8_t debouce_times = ANALOG_DEBOUCE_TIME;
+-    uint8_t row_value = 0;
+-    bool changed = false;
++    uint8_t row_value     = 0;
++    bool    changed       = false;
++    extern matrix_row_t analog_matrix_mask[];
+ 
+     do {
++        if (debouce_times != ANALOG_DEBOUCE_TIME) {
++            wait_us(10);
++        }
++
+         adcConvert(&ADCD1, &adcgrpcfg, samples, ADC_GRP_BUF_DEPTH);
+ 
+         uint8_t row_value_recheck = 0;
+         for (uint8_t row_index = 0; row_index < MATRIX_ROWS; row_index++) {
+-            matrix_row_t row_mask = 0x01 << current_col;
++            matrix_row_t row_mask = row_shifter;
++            if ((analog_matrix_mask[row_index] & row_mask) == 0) continue;
++
+             update_raw_value(row_index, current_col, samples[row_index]);
+ 
+             bool pressed = analog_matrix_get_key_state(row_index, current_col);
+             if (pressed) {
+-                if ((analog_raw_matrix[row_index] & row_mask) == 0)
++                if ((analog_raw_matrix[row_index] & row_mask) == 0) {
+                     changed = true;
+-
++                }
+                 if (debouce_times == ANALOG_DEBOUCE_TIME) {
+                     row_value |= (0x01 << row_index);
+                 } else {
+@@ -186,20 +192,22 @@ void matrix_read_rows_on_col(uint8_t current_col, matrix_row_t row_shifter) {
+         }
+ 
+         if (debouce_times != ANALOG_DEBOUCE_TIME && row_value != row_value_recheck) {
+-            // Clear state when bounce occurs
+             changed = false;
+         }
+-
+     } while (--debouce_times && changed);
+ 
+     if (changed) {
+         matrix_changed = true;
+         for (uint8_t row_index = 0; row_index < MATRIX_ROWS; row_index++) {
+-            if (row_value & (0x01 << row_index))  {
+-                if ((analog_raw_matrix[row_index] & row_shifter) == 0) changed_matrix[row_index] |= row_shifter;   // Mark changed matrix position
+-                analog_raw_matrix[row_index] |= row_shifter;    // Update matrix
++            if (row_value & (0x01 << row_index)) {
++                if ((analog_raw_matrix[row_index] & row_shifter) == 0) {
++                    changed_matrix[row_index] |= row_shifter;
++                }
++                analog_raw_matrix[row_index] |= row_shifter;
+             } else {
+-                if ((analog_raw_matrix[row_index] & row_shifter)) changed_matrix[row_index] |= row_shifter;
++                if (analog_raw_matrix[row_index] & row_shifter) {
++                    changed_matrix[row_index] |= row_shifter;
++                }
+                 analog_raw_matrix[row_index] &= ~row_shifter;
+             }
+         }
+diff --git a/keyboards/keychron/common/analog_matrix/profile.c b/keyboards/keychron/common/analog_matrix/profile.c
+index 3bec19c..90f6f34 100644
+--- a/keyboards/keychron/common/analog_matrix/profile.c
++++ b/keyboards/keychron/common/analog_matrix/profile.c
+@@ -167,6 +167,16 @@ bool profile_set_traval(uint8_t prof_idx, uint8_t mode, uint8_t act_pt, uint8_t
+         prof->global.rpd_trig_sen       = sens;
+         prof->global.rpd_trig_sen_deact = rls_sens;
+         memset(row, 0xFF, sizeof(row[0]) * MATRIX_ROWS);
++        for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
++            for (uint8_t c = 0; c < MATRIX_COLS; c++) {
++                prof->key_config[r][c].mode               = AKM_GLOBAL;
++                prof->key_config[r][c].act_pt             = 0;
++                prof->key_config[r][c].rpd_trig_sen       = 0;
++                prof->key_config[r][c].rpd_trig_sen_deact = 0;
++
++                if (prof_idx == profile_get_current_index()) update_key_config(r, c);
++            }
++        }
+     } else {
+         for (uint8_t r = 0; r < MATRIX_ROWS; r++)
+             for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+diff --git a/keyboards/keychron/q1_he/ansi_encoder/info.json b/keyboards/keychron/q1_he/ansi_encoder/info.json
+index bda72fb..6f215f5 100644
+--- a/keyboards/keychron/q1_he/ansi_encoder/info.json
++++ b/keyboards/keychron/q1_he/ansi_encoder/info.json
+@@ -1,7 +1,7 @@
+ {
+     "usb": {
+         "pid": "0x0B10",
+-        "device_version": "1.1.2"
++        "device_version": "1.2.1"
+     },
+     "layouts": {
+         "LAYOUT_ansi_82": {
+diff --git a/keyboards/keychron/q1_he/config.h b/keyboards/keychron/q1_he/config.h
+index d7b1d6e..44402d5 100644
+--- a/keyboards/keychron/q1_he/config.h
++++ b/keyboards/keychron/q1_he/config.h
+@@ -89,6 +89,9 @@
+ 
+ #endif
+ 
++/* Force Full N-Key Rollover on USB */
++#define FORCE_NKRO
++
+ /* Factory test keys */
+ #define FN_KEY_1 MO(1)
+ #define FN_KEY_2 MO(3)
+diff --git a/keyboards/keychron/q1_he/iso_encoder/info.json b/keyboards/keychron/q1_he/iso_encoder/info.json
+index d4677c8..49e7826 100644
+--- a/keyboards/keychron/q1_he/iso_encoder/info.json
++++ b/keyboards/keychron/q1_he/iso_encoder/info.json
+@@ -1,7 +1,7 @@
+ {
+     "usb": {
+         "pid": "0x0B11",
+-        "device_version": "1.0.1"
++        "device_version": "1.2.1"
+     },
+     "layouts": {
+         "LAYOUT_iso_83": {
