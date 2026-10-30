@@ -5,51 +5,76 @@
 [![Keychron Launcher](https://img.shields.io/badge/Keychron%20Launcher-Supported-blue.svg)](https://launcher.keychron.com)
 [![VIA Compatible](https://img.shields.io/badge/VIA-Compatible-yellow.svg)](https://usevia.app)
 
-QMK firmware patches and pre-compiled binaries for the **Keychron Q1 HE (ISO Knob & ANSI Knob)** providing native support for **Gateron KS-20 magnetic switches** (such as **Magnetic Jade**, **Jade Pro**, **Orchid**, **White**, and other reverse-polarity Hall Effect switches).
+QMK firmware patches and pre-compiled binaries for the **Keychron Q1 HE (ISO Knob & ANSI Knob)** providing support for **Gateron KS-20 magnetic switches** (such as **Magnetic Jade**, **Jade Pro**, **Orchid**, **White**, and other reverse-polarity Hall Effect / TMR switches).
 
 All modified source code is included in [`src/`](src/) under the GNU General Public License v2.0.
 
 ---
 
-## Technical Background: Stock Firmware vs. KS-20
+## Technical Background: Stock Hardware vs. KS-20
 
-The Keychron Q1 HE comes standard with **Gateron Jupiter** magnetic switches. Swapping them for popular reverse-polarity switches like **Gateron Magnetic Jade or KS-20 Orchid** breaks stock firmware due to several hardware and firmware factors:
+The first-generation Keychron Q1 HE comes standard with **Gateron Jupiter** magnetic switches. Swapping them for popular aftermarket switches like **Gateron KS-20 / Magnetic Jade** breaks stock firmware due to hardware and firmware constraints:
 
-1. **Reversed Magnetic Polarity:**
-   - **Jupiter switches:** As the stem is pressed down, the ADC reading **decreases** (from ~3120 down to ~1940).
-   - **KS-20 switches:** As the stem is pressed down, the ADC reading **increases** (from ~3700–4010 up to ~4094).
-   - Stock polynomial lookup tables and calibration logic assume decreasing voltage and interpret KS-20 switches as stuck or invalid.
+1. **Opposite Magnetic Polarity:**
+   - **Factory Q1 HE (Jupiter / Nebula):** The sensor circuitry is biased for **South-Pole Down (SPD)** magnets. Pressing down causes ADC readings to **decrease** (from ~3120 down to ~1940).
+   - **Gateron KS-20 / Magnetic Jade:** These switches feature **North-Pole Down (NPD)** orientation. When placed into an SPD-biased board, pressing down causes the voltage to **increase** toward the 3.3V power supply rail (from ~3570–3850 up to ~4094).
+   - Stock polynomial lookup tables and calibration routines expect decreasing voltage and interpret KS-20 switches as stuck or invalid.
+   *(Note: Newer Keychron models shipping with "Ultra Fast Lime" switches are factory-configured for native NPD and run NPD switches without polarity patches).*
 2. **Esc Key Bootmagic Lock (DFU Mode):**
-   - On plug-in, the stock bootloader checks whether Esc is pressed by looking for an ADC drop. With KS-20, its high resting ADC (~3950) causes the keyboard to detect a false Esc press, trapping the board in STM32 DFU bootloader mode on every startup.
-3. **Resting Thermal Drift & High-Baseline Keys (F-Row):**
-   - Hall sensor readings drift by +15–30 ADC counts as the PCB warms up from MCU and RGB LED operation.
-   - On high-baseline rows (the F1–F12 function row rests at ADC ~3980–4010), unhandled resting drift exceeds shallow actuation thresholds (e.g. 0.2mm), leading to ghost-pressing when untouched.
+   - On plug-in, the stock bootloader checks whether Esc is pressed by looking for an ADC drop. With KS-20 resting at high ADC, the keyboard detects a false Esc press on power-up, trapping the board in STM32 DFU bootloader mode.
+3. **Resting Thermal Drift:**
+   - Hall/TMR sensors naturally drift by +15–30 ADC counts as the PCB warms up. On high-baseline keys, unhandled drift can cross shallow actuation thresholds (e.g. 0.2mm), causing ghost-presses when untouched.
+4. **Switch Mixing Limitation:**
+   - **All switches on the board must currently be KS-20 / reverse-polarity.** A mixed setup (some stock Jupiter and some KS-20) is not reliably supported due to opposing travel curves, calibration conflicts, and bootloader Esc detection constraints.
 
 ---
 
-## Physical Hardware Limitations (KS-20 on Q1 HE PCB)
+## Hardware Telemetry & Limitations: What the Measurements Show
 
-Users installing KS-20 switches on a Q1 HE should be aware of two physical constraints:
+To understand how KS-20 switches actually behave on the Q1 HE, here are the real-world measurements taken across unmodded and hardware-spaced setups.
 
-### 1. Mechanical Travel Difference: 3.5mm vs. 4.0mm
-- **Stock Gateron Jupiter:** Has **4.0mm** of total mechanical travel. Keychron Launcher's slider (0.2mm – 3.8mm) was built around this 4.0mm baseline.
-- **Gateron KS-20 Switches:** Have a factory total mechanical travel of **3.5 ± 0.1 mm**. The switch physically stops at 3.5mm and mechanically cannot reach 3.8mm or 4.0mm.
+### 1. Mechanical Travel vs. TMR Rail Saturation
+- **Physical Travel:** Gateron KS-20 / Magnetic Jade switches have a physical stroke of **~3.5 mm** (not a full 4.0 mm).
+- **Op-Amp Rail Saturation (~4094 ADC):** 
+  Because KS-20 magnets have high flux density, the sensor circuit reaches positive rail saturation (**3.30V = 4094 counts**) before the stem completes its full mechanical stroke.
+  - **Stock / Unmodded Board:** Baseline rests at **~3820 ADC**. The 4094 ceiling is reached at roughly **~2.5 mm – 2.6 mm** of travel. The usable dynamic range is compressed to **~240 ADC counts** (~7% of the 3.3V rail). From 2.6mm to 3.5mm (the last ~0.9mm), the sensor is saturated and cannot measure further movement.
+  - **Why Deep Actuation (e.g. 3.8mm) Triggers Early:** When setting 3.8mm in Keychron Launcher, the firmware expects an ADC near 4088–4094. Because saturation occurs around 2.6mm–2.9mm, the key actuates while physical travel remains before bottom-out.
 
-### 2. Op-Amp Rail Saturation (~2.6mm – 2.8mm)
-- **High-Flux N52 Magnet:** KS-20 stems contain powerful neodymium magnets (up to 700 Gauss at bottom-out).
-- **PCB Op-Amp Rail Clipping:** The Q1 HE's analog amplifier circuit was engineered for Jupiter's reverse-polarity weaker flux. When a KS-20 magnet approaches the sensor, the amplifier output reaches its positive power supply rail (**3.30V = ADC 4094**) around **~2.6mm – 2.8mm** of physical stroke.
-- **Saturation Zone (2.8mm → 3.5mm):** From ~2.8mm down to the mechanical bottom-out at 3.5mm (the final ~0.7mm), the ADC reading is flatlined at `4094` (zero voltage change). No firmware can detect physical stem movement in this final 0.7mm because the hardware amplifier is saturated.
-- **Why 3.8mm Triggers Early:** When setting 3.8mm in Keychron Launcher, the firmware expects an ADC reading of ~4088. This reading is reached at ~2.5mm – 2.7mm of physical stroke. Consequently, the switch triggers while you still feel ~0.8mm – 1.0mm of mechanical stem travel left before bottoming out.
+---
 
-### Recommended Actuation Settings in Keychron Launcher
+## Experimental Hardware Mod: 1.0mm Plate Standoff Spacers
 
-| Profile | Recommended Setting | Behavior |
+To investigate whether the 240-count compressed range could be expanded, we tested placing **1.0mm rigid spacers (washers)** around the plate mounting standoffs to physically elevate the switch plate above the PCB.
+
+### Measured Results:
+| Metric | Stock Unmodded | 1.0mm Plate Spacers | Difference |
+| :--- | :--- | :--- | :--- |
+| **Resting Baseline (Zero)** | `~3780 – 3850 ADC` | `~3568 – 3610 ADC` | **-210 to -240 ADC counts lower** |
+| **Bottom-Out Peak** | `4094 ADC` | `4094 ADC` | Hits rail ceiling |
+| **Total Usable Dynamic Range (Delta)** | `~230 – 250 ADC` | `~510 – 526 ADC` | **+119% (2.2x resolution improvement!)** |
+| **Voltage Band Utilized** | ~7% of 3.3V rail | ~16% of 3.3V rail | Significant SNR gain |
+
+### Key Takeaway from the 1.0mm Spacer Mod:
+1. **Significant Resolution & Noise Gain:**
+   Increasing the plate distance by 1.0mm more than doubles the ADC delta (from ~240 to ~526 counts). This dramatically improves Rapid Trigger precision and reduces noise susceptibility.
+2. **Bottom-Out Saturation Persists:**
+   Even with 1.0mm spacers, the sensor **still reaches the 4094 ceiling** at roughly **~2.9 mm – 3.0 mm** of stroke. While this shifts the blind zone deeper (leaving only the final ~0.5mm saturated), it **does not completely eliminate saturation**.
+   - Completely avoiding 4094 saturation would require elevating the plate by ~1.8mm – 2.0mm, which is physically impractical as it breaks PCB-mount stabilizers and exceeds standoff screw lengths.
+   - Therefore, even with spacers, setting actuation to 3.8mm in software will actuate at ~2.9–3.0mm, slightly ahead of true mechanical bottom-out.
+
+---
+
+## Recommended Actuation Settings in Keychron Launcher
+
+Based on verified telemetry across unmodded and spaced setups:
+
+| Profile | Recommended Setting | Real-World Behavior |
 | :--- | :--- | :--- |
-| **Competitive / Esports** | `0.3 mm – 0.8 mm` | Ultra-fast response with zero misclicks. Stable with resting drift tracking. |
+| **Esports / Fast Response** | `0.4 mm – 0.8 mm` | Instantaneous response. Stable against resting drift. |
 | **Balanced / Daily Typing** | `1.2 mm – 1.8 mm` | Standard mechanical feel, eliminates accidental actuation when resting fingers. |
-| **Deep Actuation** | `2.0 mm – 2.5 mm` | Triggers near the end of the measurable linear range. |
-| **Not Recommended** | `> 2.6 mm` (e.g. `3.0 mm – 3.8 mm`) | Falls into the op-amp saturation zone; triggers early with ~0.8mm travel remaining. |
-| **Rapid Trigger** | `0.1 mm – 0.4 mm` | Optimal performance within the linear `0.2 mm – 2.5 mm` stroke window. |
+| **Deep Actuation (Maximum Practical)** | `2.0 mm – 2.5 mm` | Triggers within the verified linear sensing window. |
+| **Bottom-Out Warning** | `> 2.6 mm` (e.g. `3.0 mm – 3.8 mm`) | Enters or borders the op-amp rail saturation zone. The key will actuate before mechanical bottom-out is fully reached. |
+| **Rapid Trigger** | `0.15 mm – 0.35 mm` | Clean, chatter-free rapid trigger within the `0.3 mm – 2.5 mm` active stroke zone. |
 
 ---
 
@@ -64,22 +89,20 @@ All modified source files are located in [`src/`](src/):
 - [`src/keyboards/keychron/common/analog_matrix/profile.c`](src/keyboards/keychron/common/analog_matrix/profile.c)
 - [`src/keyboards/keychron/q1_he/config.h`](src/keyboards/keychron/q1_he/config.h)
 
-### Key Architectural Fixes:
+### Architectural Features:
 
 1. **Released-Only Upward Resting Drift Tracking:**
-   - In [`analog_matrix.c`](src/keyboards/keychron/common/analog_matrix/analog_matrix.c), `track_resting_baseline()` adapts `zero_travel` to slow upward thermal drift (+25..30 counts) only when a key is in `AKS_REGULAR_RELEASED` state, below its actuation point, and motionless within ±2 ADC counts for 1000 consecutive scans (1.0 second).
-   - Never touches `zero_travel` while a key is `AKS_REGULAR_PRESSED`. Holding or feathering a key mid-stroke is never re-zeroed or force-released.
+   - `track_resting_baseline()` in [`analog_matrix.c`](src/keyboards/keychron/common/analog_matrix/analog_matrix.c) adapts `zero_travel` to ambient thermal drift only when a key is in `AKS_REGULAR_RELEASED` state, below its actuation point, and motionless within ±2 ADC counts for 1000 consecutive scans (1.0s).
+   - Never modifies baseline while a key is `AKS_REGULAR_PRESSED`. Holding or feathering keys mid-stroke is completely protected from false re-zeroing.
 2. **Keychron Auto-Calibration State Machine:**
-   - Re-enabled and adapted Keychron's native 4-state auto-calibration state machine (`AUTO_CALIB_FULL_TRAVEL` -> `AUTO_CALIB_ZERO_TRAVEL`) for KS-20 reverse polarity.
-   - Baseline calibration updates only after a verified full bottom-out (`>= 4080`) followed by a fast snap return to the top stop within `< 200ms` across multiple cycles (`confidence >= 12`).
-3. **17-Point Saturation Compensation LUT (`ks20_travel_lut`):**
-   - Implements an 8% proportional resting deadzone (8..22 ADC counts), a 1-count top margin, and a 17-point piecewise-linear LUT linearizing the ADC response across the KS-20 op-amp curve.
-4. **Preserved Stock Keychron Debounce & Hysteresis Architecture:**
-   - Stock 3-pass hardware ADC debounce (`ANALOG_DEBOUCE_TIME` in [`analog_matrix_scan.c`](src/keyboards/keychron/common/analog_matrix/analog_matrix_scan.c)) with unpopulated matrix pin masking.
-   - Schmitt-trigger raw ADC deadband (`abs(last_val - value) < 3` in `update_raw_value()`).
-   - Stock hysteresis curve (0.2–0.3mm: release at deadzone; 0.4–1.0mm: 0.30mm; >1.0mm: 0.40mm) and Rapid Trigger `BOTTOM_DEAD_ZONE` protection.
-5. **Keychron Launcher Global Actuation Fix:**
-   - In Keychron's stock [`profile.c`](src/keyboards/keychron/common/analog_matrix/profile.c), `profile_set_traval()` previously failed to call `update_key_config()` when `global == true`. This bug left all 82 keys in RAM at default 2.0mm when setting global actuation. Fixed to update all keys immediately in RAM.
+   - Adapted Keychron's native multi-state calibration (`auto_caliration_check()`) for reverse-polarity voltage curves, requiring full bottom-out followed by a snap release into the resting zone.
+3. **17-Point Piecewise Saturation LUT (`ks20_travel_lut`):**
+   - Incorporates dynamic baseline scaling (`full - zero`), an 8% resting deadzone, and a 17-point non-linear lookup table to linearize the compressed voltage curve.
+4. **Preserved Stock Debounce & Deadband:**
+   - Retains Keychron's 3-pass hardware ADC debounce loop (`ANALOG_DEBOUCE_TIME`).
+   - Retains the Schmitt-trigger deadband (`abs(last_val - value) < 3`) to reject spring bounce and sensor jitter.
+5. **Keychron Launcher Global Profile Bugfix:**
+   - Fixed an upstream bug in [`profile.c`](src/keyboards/keychron/common/analog_matrix/profile.c) where `profile_set_traval()` failed to update active keys in RAM when applying a global actuation value.
 
 ---
 
@@ -92,7 +115,7 @@ Pre-compiled and EEPROM-protected binaries are available in [`binaries/`](binari
 | **Keychron Q1 HE ISO Knob** | ISO (UK / Nordic / German / etc.) | [`binaries/keychron_q1_he_iso_encoder_via_ks20_patched.bin`](binaries/keychron_q1_he_iso_encoder_via_ks20_patched.bin) |
 | **Keychron Q1 HE ANSI Knob** | ANSI (US Layout) | [`binaries/keychron_q1_he_ansi_encoder_via_ks20_patched.bin`](binaries/keychron_q1_he_ansi_encoder_via_ks20_patched.bin) |
 
-> **Note on EEPROM Padding:** These binaries include 0xFF padding on Sector 1 (`0x4000..0x8000`), preventing flashing tools from wiping the STM32F401 emulated EEPROM sector.
+> **EEPROM Protection:** These binaries include 0xFF padding on Sector 1 (`0x4000..0x8000`), instructing flashing tools (Keychron Launcher / QMK Toolbox) not to overwrite the STM32F401 emulated EEPROM sector, preserving VIA dynamic layouts and calibration data.
 
 ---
 
@@ -124,34 +147,6 @@ A real-time telemetry inspection tool is included in [`tools/monitor_keys.py`](t
 ```bash
 python tools/monitor_keys.py
 ```
-
----
-
-## Building from Source
-
-To compile from source:
-
-1. Clone Keychron's QMK firmware repository:
-   ```bash
-   git clone https://github.com/Keychron/qmk_firmware.git -b hall_effect_playground
-   cd qmk_firmware
-   ```
-2. Apply the unified patch:
-   ```bash
-   git apply /path/to/patches/keychron_q1_he_ks20_support.patch
-   ```
-3. Compile:
-   ```bash
-   # For ISO Knob:
-   make keychron/q1_he/iso_encoder:via
-
-   # For ANSI Knob:
-   make keychron/q1_he/ansi_encoder:via
-   ```
-4. Apply the EEPROM protection padding:
-   ```bash
-   python tools/apply_eeprom_patch.py keychron_q1_he_iso_encoder_via.bin keychron_q1_he_iso_encoder_via_ks20_patched.bin
-   ```
 
 ---
 
