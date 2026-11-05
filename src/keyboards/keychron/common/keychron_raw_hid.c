@@ -64,6 +64,7 @@ enum {
 };
 
 void get_support_feature(uint8_t *data) {
+    data[0] = 0;
     data[1] = FEATURE_DEFAULT_LAYER
 #ifdef KC_BLUETOOTH_ENABLE
               | FEATURE_BLUETOOTH
@@ -126,6 +127,8 @@ bool kc_raw_hid_rx(uint8_t *data, uint8_t length) {
 #endif
         case KC_GET_PROTOCOL_VERSION:
             data[1] = PROTOCOL_VERSION;
+            data[2] = 0;
+            data[3] = 2;
             break;
 
         case KC_GET_FIRMWARE_VERSION: {
@@ -148,6 +151,7 @@ bool kc_raw_hid_rx(uint8_t *data, uint8_t length) {
 
         case KC_GET_DEFAULT_LAYER:
             data[1] = get_highest_layer(default_layer_state);
+            data[2] = get_highest_layer(layer_state);
             break;
 
 #ifdef ANANLOG_MATRIX

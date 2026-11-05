@@ -347,7 +347,11 @@ void lkbt51_send_keyboard(uint8_t* report) {
     i += 8;
 
     lkbt51_send_cmd(payload, i, true, false);
-    lkbt51_last_comm_time = timer_read32();
+#ifdef LKBT51_RESET_PIN
+    if (!lkbt51_last_comm_time) {
+        lkbt51_last_comm_time = timer_read32();
+    }
+#endif
 }
 
 void lkbt51_send_nkro(uint8_t* report) {
@@ -359,7 +363,11 @@ void lkbt51_send_nkro(uint8_t* report) {
     i += 20;
 
     lkbt51_send_cmd(payload, i, true, false);
-    lkbt51_last_comm_time = timer_read32();
+#ifdef LKBT51_RESET_PIN
+    if (!lkbt51_last_comm_time) {
+        lkbt51_last_comm_time = timer_read32();
+    }
+#endif
 }
 
 void lkbt51_send_consumer(uint16_t report) {
@@ -372,7 +380,11 @@ void lkbt51_send_consumer(uint16_t report) {
     i += 4; // QMK doesn't send multiple consumer reports, just skip 2nd and 3rd consumer reports
 
     lkbt51_send_cmd(payload, i, true, false);
-    lkbt51_last_comm_time = timer_read32();
+#ifdef LKBT51_RESET_PIN
+    if (!lkbt51_last_comm_time) {
+        lkbt51_last_comm_time = timer_read32();
+    }
+#endif
 }
 
 void lkbt51_send_system(uint16_t report) {
@@ -387,7 +399,11 @@ void lkbt51_send_system(uint16_t report) {
     payload[i++] = 0x01 << (hid_usage - 0x81);
 
     lkbt51_send_cmd(payload, i, true, false);
-    lkbt51_last_comm_time = timer_read32();
+#ifdef LKBT51_RESET_PIN
+    if (!lkbt51_last_comm_time) {
+        lkbt51_last_comm_time = timer_read32();
+    }
+#endif
 }
 
 void lkbt51_send_mouse(uint8_t* report) {
@@ -489,7 +505,11 @@ void lkbt51_connect(uint8_t hostIndex, uint16_t timeout) {
 
     lkbt51_wake();
     lkbt51_send_cmd(payload, i, true, false);
-    lkbt51_last_comm_time = timer_read32();
+#ifdef LKBT51_RESET_PIN
+    if (!lkbt51_last_comm_time) {
+        lkbt51_last_comm_time = timer_read32();
+    }
+#endif
 }
 
 void lkbt51_disconnect(void) {
@@ -846,13 +866,16 @@ static void lkbt51_event_handler(uint8_t evt_type, uint8_t* data, uint8_t len, u
             lkbt51_dfu_tx(LKBT51_EVT_OTA_RSP, data, len, sn);
 #endif
             break;
-        case LKBT51_CMD_RAW_HID_RX:
+        case LKBT51_CMD_RAW_HID_RX: {
 #ifdef RAW_ENABLE
             kc_printf("LKBT51_CMD_RAW_HID_RX\n");
+            static uint8_t raw_hid_data[64];
+            memset(raw_hid_data, 0, sizeof(raw_hid_data));
+            memcpy(raw_hid_data, data, len > 64 ? 64 : len);
             event.evt_type            = EVT_RAW_HID;
-            event.params.raw_hid_data = data;
+            event.params.raw_hid_data = raw_hid_data;
 #endif
-            break;
+        } break;
         default:
             kc_printf("Unknown event!!!\n");
             break;
@@ -864,10 +887,6 @@ static void lkbt51_event_handler(uint8_t evt_type, uint8_t* data, uint8_t len, u
 void lkbt51_task(void) {
 #define VALID_DATA_START_INDEX 4
 #define BUFFER_SIZE 64
-
-    static bool    wait_for_new_pkt = true;
-    static uint8_t len              = 0xff;
-    static uint8_t sn               = 0;
 
     if (readPin(LKBT51_INT_INPUT_PIN) == 0) {
         uint8_t buf[BUFFER_SIZE] = {0};
@@ -956,22 +975,23 @@ void lkbt51_task(void) {
             }
         }
 
-        pbuf = buf;
-        if (wait_for_new_pkt) {
-            for (uint8_t i = 10; i < BUFFER_SIZE - 5; i++) {
-                if (buf[i] == 0xAA && buf[i + 1] == 0x57     // Packet Head
-                    && (~buf[i + 2] & 0xFF) == buf[i + 3]) { // Check wheather len is valid
-                    len              = buf[i + 2];
-                    sn               = buf[i + 4];
-                    pbuf             = &buf[i + 5];
-                    wait_for_new_pkt = false;
-                }
+        pbuf             = buf;
+        bool    found_pkt = false;
+        uint8_t len       = 0xff;
+        uint8_t sn        = 0;
+
+        for (uint8_t i = 10; i < BUFFER_SIZE - 5; i++) {
+            if (buf[i] == 0xAA && buf[i + 1] == 0x57     // Packet Head
+                && (~buf[i + 2] & 0xFF) == buf[i + 3]) { // Check whether len is valid
+                len       = buf[i + 2];
+                sn        = buf[i + 4];
+                pbuf      = &buf[i + 5];
+                found_pkt = true;
+                break;
             }
         }
 
-        if (!wait_for_new_pkt && BUFFER_SIZE - 5 >= len) {
-            wait_for_new_pkt = true;
-
+        if (found_pkt && len >= 3 && (pbuf - buf) + len <= BUFFER_SIZE) {
             uint16_t checksum = 0;
             for (int i = 0; i < len - 2; i++) {
                 checksum += pbuf[i];
@@ -979,16 +999,18 @@ void lkbt51_task(void) {
 
             if ((checksum & 0xff) == pbuf[len - 2] && ((checksum >> 8) & 0xff) == pbuf[len - 1]) {
                 lkbt51_event_handler(pbuf[0], pbuf + 1, len - 3, sn);
-            } else {
-                // TODO: Error handle
             }
         }
     }
 
+#ifdef LKBT51_RESET_PIN
     if (lkbt51_last_comm_time && timer_elapsed32(lkbt51_last_comm_time) > LKBT51_COMM_TIMEOUT_MS) {
-        lkbt51_last_comm_time = 0;
-        lkbt51_init(false);
-        wait_ms(100);
+        writePinLow(LKBT51_RESET_PIN);
+        wait_ms(10);
+        writePinHigh(LKBT51_RESET_PIN);
+        wait_ms(200);
         lkbt51_connect(0, 0);
+        lkbt51_last_comm_time = 0;
     }
+#endif
 }
