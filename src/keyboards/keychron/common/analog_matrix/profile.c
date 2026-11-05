@@ -98,6 +98,17 @@ void profile_init(bool reset) {
             if (profile[i].global.act_pt == 0 || profile[i].global.act_pt > 40) profile[i].global.act_pt = DEFAULT_ACTUATION_POINT;
             if (profile[i].global.rpd_trig_sen == 0 || profile[i].global.rpd_trig_sen > 39) profile[i].global.rpd_trig_sen = DEFAULT_RAPID_TRIGGER_SENSITIVITY;
             if (profile[i].global.rpd_trig_sen_deact == 0 || profile[i].global.rpd_trig_sen > 39) profile[i].global.rpd_trig_sen_deact = profile[i].global.rpd_trig_sen;
+
+            for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+                for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+                    if (profile[i].key_config[r][c].mode == 0) {
+                        profile[i].key_config[r][c].mode = profile[i].global.mode;
+                    }
+                    if (profile[i].key_config[r][c].act_pt == 0 || profile[i].key_config[r][c].act_pt > 40) {
+                        profile[i].key_config[r][c].act_pt = profile[i].global.act_pt;
+                    }
+                }
+            }
         }
 
         free(buf);
@@ -159,7 +170,7 @@ bool profile_set_traval(uint8_t prof_idx, uint8_t mode, uint8_t act_pt, uint8_t 
     analog_matrix_profile_t *prof = profile_get(prof_idx);
 
     // Check validity
-    if (prof_idx >= PROFILE_COUNT || mode > AKM_RAPID || act_pt < 0 || act_pt > 39 || (global && mode == AKM_GLOBAL)) return false;
+    if (prof_idx >= PROFILE_COUNT || mode > AKM_RAPID || act_pt == 0 || act_pt > 40 || (global && mode == AKM_GLOBAL)) return false;
 
     if (global) {
         prof->global.mode               = mode;
@@ -167,29 +178,19 @@ bool profile_set_traval(uint8_t prof_idx, uint8_t mode, uint8_t act_pt, uint8_t 
         prof->global.rpd_trig_sen       = sens;
         prof->global.rpd_trig_sen_deact = rls_sens;
         memset(row, 0xFF, sizeof(row[0]) * MATRIX_ROWS);
-        for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
-            for (uint8_t c = 0; c < MATRIX_COLS; c++) {
-                prof->key_config[r][c].mode               = AKM_GLOBAL;
-                prof->key_config[r][c].act_pt             = 0;
-                prof->key_config[r][c].rpd_trig_sen       = 0;
-                prof->key_config[r][c].rpd_trig_sen_deact = 0;
+    }
+
+    for (uint8_t r = 0; r < MATRIX_ROWS; r++)
+        for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+            if (row[r] & (0x01 << c)) {
+                prof->key_config[r][c].mode               = mode;
+                prof->key_config[r][c].act_pt             = act_pt;
+                prof->key_config[r][c].rpd_trig_sen       = sens;
+                prof->key_config[r][c].rpd_trig_sen_deact = rls_sens;
 
                 if (prof_idx == profile_get_current_index()) update_key_config(r, c);
             }
         }
-    } else {
-        for (uint8_t r = 0; r < MATRIX_ROWS; r++)
-            for (uint8_t c = 0; c < MATRIX_COLS; c++) {
-                if (row[r] & (0x01 << c)) {
-                    prof->key_config[r][c].mode   = mode;
-                    prof->key_config[r][c].act_pt = act_pt;
-                    prof->key_config[r][c].rpd_trig_sen       = sens;
-                    prof->key_config[r][c].rpd_trig_sen_deact = rls_sens;
-
-                    if (prof_idx == profile_get_current_index()) update_key_config(r, c);
-                }
-            }
-    }
 
     return true;
 }

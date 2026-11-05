@@ -213,6 +213,10 @@ void update_key_config(uint8_t row, uint8_t col) {
     else
         p_key->mode = p_key_cfg->mode;
 
+    if (p_key->mode == AKM_GLOBAL) {
+        p_key->mode = AKM_REGULAR;
+    }
+
     //  Override mode if advance mode setting exists
     if (p_key_cfg->adv_mode != 0) {
         p_key->mode = p_key_cfg->adv_mode;
@@ -223,6 +227,10 @@ void update_key_config(uint8_t row, uint8_t col) {
         p_key->regular.actn_pt = cur_prof->global.act_pt;
     else
         p_key->regular.actn_pt = p_key_cfg->act_pt;
+
+    if (p_key->regular.actn_pt == 0) {
+        p_key->regular.actn_pt = DEFAULT_ACTUATION_POINT;
+    }
 
     // Update deactuaction point
     p_key->regular.deactn_pt = p_key->regular.actn_pt - 3 > 0 ? p_key->regular.actn_pt - 3 : 0;
@@ -1028,6 +1036,7 @@ bool analog_matrix_get_key_state(uint8_t row, uint8_t col) {
     analog_key_t *k = &analog_key_matrix[row][col];
 
     switch (k->mode) {
+        case AKM_GLOBAL:
         case AKM_REGULAR: // fall through
             return (k->state == AKS_REGULAR_PRESSED);
 

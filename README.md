@@ -100,10 +100,17 @@ All modified source files are located in [`src/`](src/):
 - [`src/keyboards/keychron/common/analog_matrix/analog_matrix_scan.c`](src/keyboards/keychron/common/analog_matrix/analog_matrix_scan.c)
 - [`src/keyboards/keychron/common/analog_matrix/action_rapid_trigger.c`](src/keyboards/keychron/common/analog_matrix/action_rapid_trigger.c)
 - [`src/keyboards/keychron/common/analog_matrix/profile.c`](src/keyboards/keychron/common/analog_matrix/profile.c)
+- [`src/keyboards/keychron/common/keychron_raw_hid.c`](src/keyboards/keychron/common/keychron_raw_hid.c)
+- [`src/keyboards/keychron/common/wireless/lkbt51.c`](src/keyboards/keychron/common/wireless/lkbt51.c)
+- [`src/keyboards/keychron/common/wireless/lkbt51.h`](src/keyboards/keychron/common/wireless/lkbt51.h)
+- [`src/keyboards/keychron/common/wireless/wireless.c`](src/keyboards/keychron/common/wireless/wireless.c)
+- [`src/keyboards/keychron/common/wireless/wireless.h`](src/keyboards/keychron/common/wireless/wireless.h)
+- [`src/keyboards/keychron/common/wireless/wireless_event_type.h`](src/keyboards/keychron/common/wireless/wireless_event_type.h)
 - [`src/keyboards/keychron/common/wireless/lpm.c`](src/keyboards/keychron/common/wireless/lpm.c)
 - [`src/keyboards/keychron/common/wireless/lpm.h`](src/keyboards/keychron/common/wireless/lpm.h)
 - [`src/keyboards/keychron/common/wireless/lpm_stm32f401.c`](src/keyboards/keychron/common/wireless/lpm_stm32f401.c)
 - [`src/keyboards/keychron/q1_he/config.h`](src/keyboards/keychron/q1_he/config.h)
+- [`src/tmk_core/protocol/chibios/usb_main.c`](src/tmk_core/protocol/chibios/usb_main.c)
 
 ### Architectural Features:
 
@@ -117,11 +124,14 @@ All modified source files are located in [`src/`](src/):
 4. **Preserved Stock Debounce & Deadband:**
    - Retains Keychron's 3-pass hardware ADC debounce loop (`ANALOG_DEBOUCE_TIME`).
    - Retains the Schmitt-trigger deadband (`abs(last_val - value) < 3`) to reject spring bounce and sensor jitter.
-5. **Keychron Launcher Global Profile Bugfix:**
-   - Fixed an upstream bug in [`profile.c`](src/keyboards/keychron/common/analog_matrix/profile.c) where `profile_set_traval()` failed to update active keys in RAM when applying a global actuation value.
+5. **Keychron Launcher Global Profile & Key Config Safeguards:**
+   - Fixed [`profile_set_traval()`](src/keyboards/keychron/common/analog_matrix/profile.c) so global actuation updates write explicit per-key `mode`, `act_pt`, `rpd_trig_sen`, and `rpd_trig_sen_deact` values into `prof->key_config[r][c]` (matching Keychron Launcher's expected `AMC_GET_PROFILE_RAW` state) and added non-zero mode/actuation guards in [`update_key_config()`](src/keyboards/keychron/common/analog_matrix/analog_matrix.c).
 6. **Wireless Deep Sleep (`PM_STOP`) Hardware RTC Wake-Up & Fast Warm Resume:**
    - Configures the STM32F401 hardware RTC Periodic Wakeup Timer (`RTCD1` at ~90 ms intervals) in [`lpm_stm32f401.c`](src/keyboards/keychron/common/wireless/lpm_stm32f401.c) to briefly probe the Hall sensor matrix (`analog_matrix_lpm_any_key_pressed()`) during `PM_STOP`, bypassing the South-pole-only `C5` hardware comparator limitation.
    - Implements fast warm re-initialization in `analog_matrix_init()` on wake-up (preserving calibrated `zero_travel` baselines in RAM, skipping the 60 ms `CALIB_ZERO_TRAVEL_POWER_ON` window, preventing `Esc` wake-up from triggering USB DFU mode, and immediately waking the RGB backlight and `wireless_connect()`).
+7. **Keychron Link (2.4 GHz) Wireless Raw HID Support & `LKBT51` SPI Stack Overflow Fixes:**
+   - Backported full 2.4 GHz wireless Raw HID pass-through (`LKBT51_CMD_RAW_HID_RX = 0x92` / `LKBT51_CMD_RAW_HID_TX = 0x93`, `EVT_RAW_HID`, `kc_wireless_raw_hid_rx()`, and `raw_hid_send_kb()`) from Keychron's `2025q3` branch across [`lkbt51.c`](src/keyboards/keychron/common/wireless/lkbt51.c), [`wireless.c`](src/keyboards/keychron/common/wireless/wireless.c), [`keychron_raw_hid.c`](src/keyboards/keychron/common/keychron_raw_hid.c), and [`usb_main.c`](src/tmk_core/protocol/chibios/usb_main.c) so connecting or changing settings via **Keychron Link (2.4 GHz)** or USB while in wireless mode never locks up the `LKBT51` transceiver.
+   - Fixed a 4-byte SPI stack buffer overflow in `lkbt51_read()` (`expect_len = 64` + 4 header bytes = 68 bytes into a 64-byte stack buffer), a stack smash in `lkbt51_dfu_tx()` when `len > 25`, a double `raw_hid_send()` response on `id_switch_matrix_state`, and added the 2000 ms `lkbt51_last_comm_time` hardware reset watchdog on `LKBT51_RESET_PIN`.
 
 ---
 
