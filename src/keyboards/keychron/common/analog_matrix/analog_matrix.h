@@ -149,6 +149,8 @@ void analog_matrix_set_maxs(uint16_t *max);
 uint8_t  analog_matrix_get_travel(uint8_t row, uint8_t col);
 uint8_t analog_matrix_get_key_mode(uint8_t row, uint8_t col);
 bool    analog_matrix_get_key_state(uint8_t row, uint8_t col);
+bool    analog_matrix_is_wakeup_pressed(uint8_t row, uint8_t col, uint16_t value);
+bool    analog_matrix_lpm_any_key_pressed(void);
 bool    analog_matrix_calibrating(void);
 matrix_row_t analog_matrix_get_row(uint8_t row);
 void    analog_matrix_rx(uint8_t *data, uint8_t length);

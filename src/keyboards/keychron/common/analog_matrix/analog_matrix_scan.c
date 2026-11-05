@@ -363,3 +363,93 @@ void  matrix_lpm(void) {
 
 }
 
+bool analog_matrix_lpm_any_key_pressed(void) {
+    extern matrix_row_t analog_matrix_mask[];
+    bool any_pressed = false;
+
+#ifdef ANALOG_MATRIX_WAKEUP_PIN
+    EXTI->IMR &= ~(1U << PAL_PAD(ANALOG_MATRIX_WAKEUP_PIN));
+#endif
+
+#ifdef ANALOG_MATRIX_POWER_PIN
+    setPinOutput(ANALOG_MATRIX_POWER_PIN);
+    writePin(ANALOG_MATRIX_POWER_PIN, ANALOG_MATRIX_POWER_ENABLE_LEVEL);
+#endif
+
+    setPinOutput(HC164_DS);
+    setPinOutput(HC164_CP);
+    setPinOutput(HC164_MR);
+    writePinLow(HC164_MR);
+
+    for (uint8_t x = 0; x < MATRIX_ROWS; x++) {
+        if (row_pins[x] != NO_PIN) {
+            palSetLineMode(row_pins[x], PAL_MODE_INPUT_ANALOG);
+            palWriteLine(row_pins[x], 0);
+        }
+    }
+
+    adcStart(&ADCD1, NULL);
+    SYSCFG->PMC |= SYSCFG_PMC_ADC1DC2;
+
+    // Warm up Hall sensors and ADC after power-on (3 passes across columns)
+    for (uint8_t i = 0; i < 3; i++) {
+        for (uint8_t current_col = 0; current_col < MATRIX_COLS; current_col++) {
+            select_col(current_col);
+            shifter_delay(600);
+            adcConvert(&ADCD1, &adcgrpcfg, samples, ADC_GRP_BUF_DEPTH);
+            unselect_col(current_col);
+        }
+    }
+
+    // Check if any active key in the matrix is pressed past wakeup threshold
+    for (uint8_t current_col = 0; current_col < MATRIX_COLS; current_col++) {
+        select_col(current_col);
+        shifter_delay(600);
+        adcConvert(&ADCD1, &adcgrpcfg, samples, ADC_GRP_BUF_DEPTH);
+
+        for (uint8_t row_index = 0; row_index < MATRIX_ROWS; row_index++) {
+            if ((analog_matrix_mask[row_index] & (1U << current_col)) == 0) continue;
+            if (analog_matrix_is_wakeup_pressed(row_index, current_col, samples[row_index])) {
+                shifter_delay(200);
+                adcConvert(&ADCD1, &adcgrpcfg, samples, ADC_GRP_BUF_DEPTH);
+                if (analog_matrix_is_wakeup_pressed(row_index, current_col, samples[row_index])) {
+                    any_pressed = true;
+                    break;
+                }
+            }
+        }
+        unselect_col(current_col);
+        if (any_pressed) break;
+    }
+
+    adcStop(&ADCD1);
+
+#ifdef HC164_DS
+    setPinInputLow(HC164_DS);
+#endif
+#ifdef HC164_CP
+    setPinInputLow(HC164_CP);
+#endif
+#ifdef HC164_MR
+    setPinInputLow(HC164_MR);
+#endif
+
+#ifdef ANALOG_MATRIX_POWER_PIN
+    writePin(ANALOG_MATRIX_POWER_PIN, !ANALOG_MATRIX_POWER_ENABLE_LEVEL);
+#endif
+
+    for (uint8_t x = 0; x < MATRIX_ROWS; x++) {
+        if (row_pins[x] != NO_PIN) {
+            setPinInputLow(row_pins[x]);
+        }
+    }
+
+#ifdef ANALOG_MATRIX_WAKEUP_PIN
+    shifter_delay(1000);
+    EXTI->PR = (1U << PAL_PAD(ANALOG_MATRIX_WAKEUP_PIN));
+    EXTI->IMR |= (1U << PAL_PAD(ANALOG_MATRIX_WAKEUP_PIN));
+#endif
+
+    return any_pressed;
+}
+

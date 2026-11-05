@@ -137,6 +137,7 @@ uint8_t calibrated, rapid_actuation, rapid_sensitivity;
 static uint32_t calib_ind_timer = 0;
 static uint8_t  last_calib_row  = 0xFF;
 static uint8_t  last_calib_col  = 0xFF;
+static bool     analog_matrix_initialized = false;
 
 uint32_t debug_interval = 0;
 
@@ -514,7 +515,10 @@ static bool calibrate(void) {
                     if (!key_invalid) {
                         bool is_rev_key = (avg_val >= REV_POLARITY_ZERO_THRESHOLD);
                         if (is_rev_key) {
-                            if (avg_val < 4050) {
+                            bool has_saved_zero = ((calibrated & CALI_ZERO_TRAVEL) != 0 &&
+                                                   saved_calib_values[r][c].zero_travel >= REV_POLARITY_ZERO_THRESHOLD &&
+                                                   saved_calib_values[r][c].zero_travel < 4050);
+                            if (avg_val < 4050 && (!has_saved_zero || (int32_t)avg_val <= (int32_t)saved_calib_values[r][c].zero_travel + 40)) {
                                 calib_values[r][c].zero_travel = avg_val;
                             }
                             if (calib_values[r][c].full_travel <= calib_values[r][c].zero_travel ||
@@ -856,6 +860,26 @@ void analog_matrix_eeconfig_init(void) {
 }
 
 void analog_matrix_init(void) {
+    if (analog_matrix_initialized) {
+        // Fast warm re-init after waking from wireless low-power mode (PM_STOP):
+        // Restore I2C pins without re-reading EEPROM or running power-on zero calibration
+        // so wake-up keystrokes are detected immediately and Esc never triggers DFU on wake
+        palSetLineMode(I2C1_SCL_PIN, PAL_MODE_ALTERNATE(4) | PAL_OUTPUT_TYPE_OPENDRAIN);
+        palSetLineMode(I2C1_SDA_PIN, PAL_MODE_ALTERNATE(4) | PAL_OUTPUT_TYPE_OPENDRAIN);
+#if defined(EXTERNAL_EEPROM_WP_PIN)
+        writePin(EXTERNAL_EEPROM_WP_PIN, 1);
+        setPinInputHigh(EXTERNAL_EEPROM_WP_PIN);
+#endif
+        memset(analog_key_matrix, 0, sizeof(analog_key_matrix));
+        memset(rev_ema, 0, sizeof(rev_ema));
+        memset(rev_rest_val, 0, sizeof(rev_rest_val));
+        memset(rev_rest_cnt, 0, sizeof(rev_rest_cnt));
+        update_travel_configs();
+        auto_calibration_init();
+        cali_state = CALIB_OFF;
+        return;
+    }
+
     he_eeprom_driver_init();
 
     analog_matrix_eeconfig_init();
@@ -870,12 +894,34 @@ void analog_matrix_init(void) {
     for (uint8_t i = 0; i < CAL_SAMPL_CNT; i++)
         matrix_scan();
 
-    // Check if Esc (Row 0, Col 0) is held down on boot for DFU entry
+    analog_matrix_initialized = true;
+
+    // Check if Esc (Row 0, Col 0) is held down on cold boot for DFU entry
     // On pure KS-20 setup, resting ADC is ~3950. When pressed down, ADC rises to > 4060
     uint16_t esc_adc = analog_key_matrix[0][0].value;
     if (esc_adc >= 4050) {
         // Esc is held down on plug-in! Jump to STM32 DFU bootloader immediately
         bootloader_jump();
+    }
+}
+
+bool analog_matrix_is_wakeup_pressed(uint8_t row, uint8_t col, uint16_t value) {
+    if ((analog_matrix_mask[row] & (0x01 << col)) == 0) return false;
+    if (value < VALID_ANALOG_RAW_VALUE_MIN || value > VALID_ANALOG_RAW_VALUE_MAX) return false;
+
+    uint16_t zero = calib_values[row][col].zero_travel;
+    uint16_t full = calib_values[row][col].full_travel;
+    bool     is_rev = (full > zero || zero >= REV_POLARITY_ZERO_THRESHOLD);
+
+    if (is_rev) {
+        int32_t full_delta = (int32_t)full - (int32_t)zero;
+        if (full_delta < 40) full_delta = DEFAULT_REV_FULL_RANGE;
+        int32_t wake_delta = (full_delta * 20) / 100;
+        if (wake_delta < 22) wake_delta = 22;
+        if (wake_delta > 40) wake_delta = 40;
+        return ((int32_t)value - (int32_t)zero) >= wake_delta || value >= 4065;
+    } else {
+        return ((int32_t)zero - (int32_t)value) >= 120;
     }
 }
 

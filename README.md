@@ -24,7 +24,9 @@ The first-generation Keychron Q1 HE comes standard with **Gateron Jupiter** magn
    - On plug-in, the stock bootloader checks whether Esc is pressed by looking for an ADC drop. With KS-20 resting at high ADC, the keyboard detects a false Esc press on power-up, trapping the board in STM32 DFU bootloader mode.
 3. **Resting Thermal Drift:**
    - Hall/TMR sensors naturally drift by +15–30 ADC counts as the PCB warms up. On high-baseline keys, unhandled drift can cross shallow actuation thresholds (e.g. 0.2mm), causing ghost-presses when untouched.
-4. **Switch Mixing Limitation:**
+4. **Wireless Deep Sleep (`PM_STOP`) Wake-Up Failure:**
+   - In wireless modes (2.4 GHz / Bluetooth), the Q1 HE powers down the 3.3V Hall sensor rail (`C13`) during deep sleep (`PM_STOP`) and relies on a low-power magnetic comparator on pin `C5` (`ANALOG_MATRIX_WAKEUP_PIN`) to wake the MCU. Because that comparator is hardware-biased for South-Pole Down magnets, North-Pole Down KS-20 switches cannot trigger the hardware wake-up interrupt. Furthermore, calling cold-boot initialization routines (`CALIB_ZERO_TRAVEL_POWER_ON` and `Esc` DFU check) upon `lpm_wakeup()` swallows wake-up keystrokes or locks the board into USB DFU mode while wireless.
+5. **Switch Mixing Limitation:**
    - **All switches on the board must currently be KS-20 / reverse-polarity.** A mixed setup (some stock Jupiter and some KS-20) is not reliably supported due to opposing travel curves, calibration conflicts, and bootloader Esc detection constraints.
 
 ---
@@ -42,25 +44,36 @@ To understand how KS-20 switches actually behave on the Q1 HE, here are the real
 
 ---
 
-## Experimental Hardware Mod: 1.0mm Plate Standoff Spacers
+## Hardware Mod: 1.0mm Plate Elevation & 3D-Printable Acoustic Spacer Pad
 
-To investigate whether the 240-count compressed range could be expanded, we tested placing **1.0mm rigid spacers (washers)** around the plate mounting standoffs to physically elevate the switch plate above the PCB.
+To investigate whether the 240-count compressed range could be expanded, we tested elevating the switch plate by **1.0 mm** above the PCB. To eliminate the resulting 1.0 mm hollow air gap beneath the switches and improve the keyboard's sound profile (acoustics) and switch seating stability, custom **3D-printable 1.0 mm under-switch spacer / acoustic pad models** are included in [`3d_print/`](3d_print/).
 
-### Measured Results:
-| Metric | Stock Unmodded | 1.0mm Plate Spacers | Difference |
+### 3D Print Files (`3d_print/`):
+| File | Format | Description |
+| :--- | :--- | :--- |
+| [`3d_print/Q1-HE_PCB_PLATE.stl`](3d_print/Q1-HE_PCB_PLATE.stl) | `.stl` | 1.0 mm PCB / under-switch acoustic spacer pad mesh for universal slicers |
+| [`3d_print/Q1-HE_SPACER_PLATE.3mf`](3d_print/Q1-HE_SPACER_PLATE.3mf) | `.3mf` | Pre-configured 3MF project file for 1.0 mm spacer & acoustic pad printing |
+
+- **Recommended Materials:**
+  - **TPU (95A):** Best for acoustic dampening ("thocky" / muted bottom-out), vibration absorption, and a compliant Poron/silicone-like under-switch pad feel while maintaining the 1.0 mm spacing.
+  - **PETG:** Ideal for a firmer, dimensionally rigid 1.0 mm mechanical spacer that still fills the sub-switch cavity and prevents hollow case resonance.
+- **Recommended Slicer Settings:** `0.20 mm` layer height (5 solid layers = exact `1.00 mm` thickness), `100%` infill, no supports required.
+
+### Measured Telemetry Results (1.0mm Elevation):
+| Metric | Stock Unmodded | 1.0mm Plate Spacer Pad | Difference |
 | :--- | :--- | :--- | :--- |
 | **Resting Baseline (Zero)** | `~3780 – 3850 ADC` | `~3568 – 3610 ADC` | **-210 to -240 ADC counts lower** |
 | **Bottom-Out Peak** | `4094 ADC` | `4094 ADC` | Hits rail ceiling |
 | **Total Usable Dynamic Range (Delta)** | `~230 – 250 ADC` | `~510 – 526 ADC` | **+119% (2.2x resolution improvement!)** |
 | **Voltage Band Utilized** | ~7% of 3.3V rail | ~16% of 3.3V rail | Significant SNR gain |
 
-### Key Takeaway from the 1.0mm Spacer Mod:
-1. **Significant Resolution & Noise Gain:**
-   Increasing the plate distance by 1.0mm more than doubles the ADC delta (from ~240 to ~526 counts). This dramatically improves Rapid Trigger precision and reduces noise susceptibility.
+### Key Takeaway from the 1.0mm Spacer Pad Mod:
+1. **Significant Resolution, Stability & Acoustic Gain:**
+   Increasing the plate-to-PCB distance by 1.0 mm more than doubles the usable ADC delta (from ~240 to ~526 counts), dramatically improving Rapid Trigger precision and SNR, while the 3D-printed TPU/PETG pad fills the sub-switch void so switches sit flush without hollow acoustic reverb.
 2. **Bottom-Out Saturation Persists:**
-   Even with 1.0mm spacers, the sensor **still reaches the 4094 ceiling** at roughly **~2.9 mm – 3.0 mm** of stroke. While this shifts the blind zone deeper (leaving only the final ~0.5mm saturated), it **does not completely eliminate saturation**.
-   - Completely avoiding 4094 saturation would require elevating the plate by ~1.8mm – 2.0mm, which is physically impractical as it breaks PCB-mount stabilizers and exceeds standoff screw lengths.
-   - Therefore, even with spacers, setting actuation to 3.8mm in software will actuate at ~2.9–3.0mm, slightly ahead of true mechanical bottom-out.
+   Even with the 1.0 mm spacer pad, the sensor **still reaches the 4094 ceiling** at roughly **~2.9 mm – 3.0 mm** of stroke. While this shifts the blind zone deeper (leaving only the final ~0.5 mm saturated), it **does not completely eliminate saturation**.
+   - Completely avoiding 4094 saturation would require elevating the plate by ~1.8 mm – 2.0 mm, which is physically impractical as it breaks PCB-mount stabilizers and exceeds standoff screw lengths.
+   - Therefore, even with the 1.0 mm spacer pad, setting actuation to 3.8 mm in software will actuate at ~2.9–3.0 mm, slightly ahead of true mechanical bottom-out.
 
 ---
 
@@ -87,6 +100,9 @@ All modified source files are located in [`src/`](src/):
 - [`src/keyboards/keychron/common/analog_matrix/analog_matrix_scan.c`](src/keyboards/keychron/common/analog_matrix/analog_matrix_scan.c)
 - [`src/keyboards/keychron/common/analog_matrix/action_rapid_trigger.c`](src/keyboards/keychron/common/analog_matrix/action_rapid_trigger.c)
 - [`src/keyboards/keychron/common/analog_matrix/profile.c`](src/keyboards/keychron/common/analog_matrix/profile.c)
+- [`src/keyboards/keychron/common/wireless/lpm.c`](src/keyboards/keychron/common/wireless/lpm.c)
+- [`src/keyboards/keychron/common/wireless/lpm.h`](src/keyboards/keychron/common/wireless/lpm.h)
+- [`src/keyboards/keychron/common/wireless/lpm_stm32f401.c`](src/keyboards/keychron/common/wireless/lpm_stm32f401.c)
 - [`src/keyboards/keychron/q1_he/config.h`](src/keyboards/keychron/q1_he/config.h)
 
 ### Architectural Features:
@@ -103,6 +119,9 @@ All modified source files are located in [`src/`](src/):
    - Retains the Schmitt-trigger deadband (`abs(last_val - value) < 3`) to reject spring bounce and sensor jitter.
 5. **Keychron Launcher Global Profile Bugfix:**
    - Fixed an upstream bug in [`profile.c`](src/keyboards/keychron/common/analog_matrix/profile.c) where `profile_set_traval()` failed to update active keys in RAM when applying a global actuation value.
+6. **Wireless Deep Sleep (`PM_STOP`) Hardware RTC Wake-Up & Fast Warm Resume:**
+   - Configures the STM32F401 hardware RTC Periodic Wakeup Timer (`RTCD1` at ~90 ms intervals) in [`lpm_stm32f401.c`](src/keyboards/keychron/common/wireless/lpm_stm32f401.c) to briefly probe the Hall sensor matrix (`analog_matrix_lpm_any_key_pressed()`) during `PM_STOP`, bypassing the South-pole-only `C5` hardware comparator limitation.
+   - Implements fast warm re-initialization in `analog_matrix_init()` on wake-up (preserving calibrated `zero_travel` baselines in RAM, skipping the 60 ms `CALIB_ZERO_TRAVEL_POWER_ON` window, preventing `Esc` wake-up from triggering USB DFU mode, and immediately waking the RGB backlight and `wireless_connect()`).
 
 ---
 
