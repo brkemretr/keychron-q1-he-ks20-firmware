@@ -48,11 +48,11 @@ To understand how KS-20 switches actually behave on the Q1 HE, here are the real
 
 To investigate whether the 240-count compressed range could be expanded, we tested elevating the switch plate by **1.0 mm** above the PCB. To eliminate the resulting 1.0 mm hollow air gap beneath the switches and improve the keyboard's sound profile (acoustics) and switch seating stability, custom **3D-printable 1.0 mm under-switch spacer / acoustic pad models** are included in [`3d_print/`](3d_print/).
 
-### 3D Print Files (`3d_print/`):
-| File | Format | Description |
-| :--- | :--- | :--- |
-| [`3d_print/Q1-HE_PCB_PLATE.stl`](3d_print/Q1-HE_PCB_PLATE.stl) | `.stl` | 1.0 mm PCB / under-switch acoustic spacer pad mesh for universal slicers |
-| [`3d_print/Q1-HE_SPACER_PLATE.3mf`](3d_print/Q1-HE_SPACER_PLATE.3mf) | `.3mf` | Pre-configured 3MF project file for 1.0 mm spacer & acoustic pad printing |
+### 3D Print Files (`3d_print/` — ISO Layout):
+| File | Layout | Format | Description |
+| :--- | :--- | :--- | :--- |
+| [`3d_print/Q1-HE_ISO_SPACER_PLATE.stl`](3d_print/Q1-HE_ISO_SPACER_PLATE.stl) | **ISO** | `.stl` | 1.0 mm ISO under-switch acoustic spacer pad mesh for universal slicers |
+| [`3d_print/Q1-HE_ISO_SPACER_PLATE.3mf`](3d_print/Q1-HE_ISO_SPACER_PLATE.3mf) | **ISO** | `.3mf` | Pre-configured 3MF project file for 1.0 mm ISO spacer & acoustic pad printing |
 
 - **Recommended Materials:**
   - **TPU (95A):** Best for acoustic dampening ("thocky" / muted bottom-out), vibration absorption, and a compliant Poron/silicone-like under-switch pad feel while maintaining the 1.0 mm spacing.
