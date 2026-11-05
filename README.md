@@ -55,7 +55,7 @@ To investigate whether the 240-count compressed range could be expanded, we test
 | [`3d_print/Q1-HE_ISO_SPACER_PLATE.3mf`](3d_print/Q1-HE_ISO_SPACER_PLATE.3mf) | **ISO** | `.3mf` | Pre-configured 3MF project file for 1.0 mm ISO spacer & acoustic pad printing |
 
 - **Recommended Materials:**
-  - **TPU (95A):** Best for acoustic dampening ("thocky" / muted bottom-out), vibration absorption, and a compliant Poron/silicone-like under-switch pad feel while maintaining the 1.0 mm spacing.
+  - **TPU (Flexible — 85A / 90A / 95A or Foaming TPU):** Best for acoustic dampening ("thocky" / muted bottom-out), vibration absorption, and a compliant Poron/silicone-like under-switch pad feel while maintaining the 1.0 mm spacing. Softer Shore hardnesses (e.g., **85A – 90A** or foaming TPU) provide even better acoustic absorption and vibration isolation than standard 95A.
   - **PETG:** Ideal for a firmer, dimensionally rigid 1.0 mm mechanical spacer that still fills the sub-switch cavity and prevents hollow case resonance.
 - **Recommended Slicer Settings:** `0.20 mm` layer height (5 solid layers = exact `1.00 mm` thickness), `100%` infill, no supports required.
 
